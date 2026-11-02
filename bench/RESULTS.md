@@ -24,13 +24,13 @@ Throughput for 4 and 8 FPs dropped in the last step because the previous run sil
 ## 3. Bottlenecks and Optimizations
 
 ### (a) Producer-Side Context-Switch Ping-Pong
-- **Problem**: Full queues caused producers to block on every push and wake consumers immediately. Baseline with 1 FP produced 4,355,986 voluntary context switches, 41.98 s system time, and 18.71 s user time (8 FP had 579,926 switches).
-- **Fix**: Added watermark hysteresis (`low_watermark_ = max_size_ / 2`, waking producers only when occupancy drops below the watermark) and batch popping (`popBatch` up to 64 packets).
+- **Problem**: When a queue was full, every single pop woke a blocked producer, which pushed one packet, found the queue full again and went back to sleep (~2.2 context switches per packet). Baseline with 1 FP produced 4,355,986 voluntary context switches, 41.98 s system time, and 18.71 s user time (8 FP had 579,926 switches).
+- **Fix**: Added watermark hysteresis (`low_watermark_ = max_size_ / 2`, waking producers only when occupancy drops below the watermark) and batch popping (`popBatch` of up to 256 packets per lock).
 - **Result**: 1-FP voluntary context switches fell to 769,367 and system time to 6.91 s. Median throughput increased from 53,194 to 176,403 PPS.
 
 ### (b) Consumer-Side Wake-Ups
 - **Problem**: Consumers drained queues faster than producers filled them, sleeping and waking on every single push. Profiling showed ~48% (2 FP) and ~21% (8 FP) of CPU samples in kernel wake-up paths (`_raw_spin_unlock_irqrestore`, `futex`).
-- **Fix**: Implemented `pushBatch` on worker queues and converted the Reporter thread to 5 ms polling (`popBatchWithTimeout`) without per-event consumer notifications.
+- **Fix**: Added producer-side batching (`pushBatch`: the replay reader hands each LB 128 packets at a time, and LB threads flush per-FP batches), and made the Reporter thread non-blocking (`popBatch` with a 0 ms timeout, sleeping 2 ms when fewer than 512 events are queued) so it is never woken per event.
 - **Result**: Voluntary context switches dropped to 13,818 (1 FP, 0.32 s system time), 38,290 (2 FP), and 221,400 (8 FP). Median throughput reached 389,869 PPS (1 FP) and 596,393 PPS (2 FP) with 0 reporter drops.
 
 ### (c) Redis Telemetry Ingestion Bottleneck
