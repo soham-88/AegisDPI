@@ -3,6 +3,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -69,6 +70,7 @@ std::vector<std::unique_ptr<LBStats>> lb_stats;
 std::vector<std::unique_ptr<FPStats>> fp_stats;
 
 std::atomic<uint64_t> total_read{0};
+std::atomic<uint64_t> total_bytes{0};
 std::atomic<uint64_t> total_dropped{0};
 std::atomic<uint64_t> total_forwarded{0};
 std::atomic<uint64_t> total_unhandled{0};
@@ -405,6 +407,9 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < num_fps; ++i)
     fp_threads.emplace_back(fp_thread_func, i);
 
+  std::chrono::steady_clock::time_point start_time;
+  bool timing_started = false;
+
   if (!live_iface.empty()) {
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *pcap_handle =
@@ -437,6 +442,11 @@ int main(int argc, char *argv[]) {
         if (ret < 0)
           break; // EOF or Error
 
+        if (!timing_started) {
+          start_time = std::chrono::steady_clock::now();
+          timing_started = true;
+        }
+
         total_read++;
         bytes_total += header->len;
         RawPacket raw;
@@ -445,6 +455,7 @@ int main(int argc, char *argv[]) {
         raw.header.incl_len = header->caplen;
         raw.header.orig_len = header->len;
         raw.data.assign(data, data + header->caplen);
+        total_bytes += raw.data.size();
 
         // Directly distribute to LBs. Parsing in Reader is redundant overhead.
         int lb_idx = total_read % num_lbs;
@@ -459,8 +470,13 @@ int main(int argc, char *argv[]) {
     } else {
       RawPacket raw;
       while (keep_running && reader.readNextPacket(raw)) {
+        if (!timing_started) {
+          start_time = std::chrono::steady_clock::now();
+          timing_started = true;
+        }
         total_read++;
         bytes_total += raw.header.orig_len;
+        total_bytes += raw.data.size();
         // Directly distribute to LBs.
         int lb_idx = total_read % num_lbs;
         lb_queues[lb_idx]->push(std::make_shared<RawPacket>(std::move(raw)));
@@ -477,6 +493,8 @@ int main(int argc, char *argv[]) {
   fp_keep_running = false;
   for (auto &t : fp_threads)
     t.join();
+
+  auto end_time = std::chrono::steady_clock::now();
 
   if (global_reporter) {
     global_reporter->stop();
@@ -500,6 +518,28 @@ int main(int argc, char *argv[]) {
     std::cout << "Reporter Q Drops : " << global_reporter->getDroppedLogEvents()
               << "\n";
   }
+
+  double processing_seconds = 0.0;
+  uint64_t throughput_pps = 0;
+  double throughput_mbps = 0.0;
+  if (timing_started && total_read > 0) {
+    processing_seconds =
+        std::chrono::duration<double>(end_time - start_time).count();
+    if (processing_seconds > 0.0) {
+      throughput_pps = static_cast<uint64_t>(
+          static_cast<double>(total_read) / processing_seconds);
+      throughput_mbps =
+          (static_cast<double>(total_bytes) * 8.0) / processing_seconds / 1e6;
+    }
+  }
+
+  std::cout << std::fixed;
+  std::cout << "Processing Time (s): " << std::setprecision(3)
+            << processing_seconds << "\n";
+  std::cout << "Throughput (pps)   : " << throughput_pps << "\n";
+  std::cout << "Throughput (Mbps)  : " << std::setprecision(2)
+            << throughput_mbps << "\n";
+  std::cout << std::defaultfloat;
   std::cout << "\n";
 
   std::cout << "--- Load Balancer Stats ---\n";
