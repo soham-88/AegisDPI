@@ -1,0 +1,26 @@
+# Secrets - never commit
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Build output
+engine/build/
+frontend/dist/
+
+# Runtime data
+*.rdb
+logs/
+*.log
+run/
+ml-service/model.joblib
+
+# Editor / OS
+.vscode/
+.DS_Store

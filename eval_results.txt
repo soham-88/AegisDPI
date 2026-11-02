@@ -1,0 +1,24 @@
+=== Replay throughput (2 LB threads, Redis disabled so only the engine is measured) ===
+FPs    Packets      Seconds    Packets/sec    FP split
+1      500500       9.518      52584          500500
+1      500500       9.348      53539          500500
+1      500500       9.521      52567          500500
+2      500500       6.762      74021          249275/251225
+2      500500       6.711      74574          249275/251225
+2      500500       6.798      73629          249275/251225
+4      500500       2.023      247386         124670/125772/124605/125453
+4      500500       1.853      270120         124670/125772/124605/125453
+4      500500       1.944      257437         124670/125772/124605/125453
+
+=== Flood detection trials (3000-packet ping flood from 10.10.0.2) ===
+Trial  Detected  Confidence  Attack->Block(s) Post-block loss Telegram
+1      YES       87.6%       0.26             100%            sent
+2      YES       92.5%       1.03             100%            suppressed_cooldown
+3      YES       92.5%       0.64             100%            suppressed_cooldown
+4      YES       92.5%       0.59             100%            suppressed_cooldown
+5      YES       92.5%       0.64             100%            suppressed_cooldown
+
+=== Normal-traffic false-positive check ===
+Duration: 300 s   New ANOMALOUS verdicts (false positives): 0
+Packets captured meanwhile (pcap_recv): 231
+

@@ -1,0 +1,7 @@
+{
+  "packets_per_second": 13.6071,
+  "unique_dst_ports": 1.397,
+  "unique_dst_ips": 1.923,
+  "dropped_ratio": 0.0048,
+  "protocol_diversity": 1.079
+}
