@@ -49,7 +49,7 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 
-add_executable(dpi_tests tests/dpi_tests.cpp tests/flow_hash_test.cpp ${ENGINE_SOURCES})
+add_executable(dpi_tests tests/dpi_tests.cpp tests/flow_hash_test.cpp tests/queue_test.cpp ${ENGINE_SOURCES})
 target_link_libraries(dpi_tests GTest::gtest_main GTest::gtest ${PCAP_LIBRARY} Threads::Threads redis++ hiredis)
 
 include(GoogleTest)

@@ -58,6 +58,8 @@ struct FPStats {
   std::atomic<uint64_t> sni_found{0};
 };
 
+constexpr size_t WORKER_BATCH_SIZE = 256;
+
 int num_lbs = 1;
 int num_fps = 1;
 
@@ -77,167 +79,180 @@ std::atomic<uint64_t> total_unhandled{0};
 
 std::shared_ptr<Enforcer> global_enforcer = nullptr;
 
+static void process_lb_packet(int id, const std::shared_ptr<RawPacket>& pkt_ptr) {
+  ParsedPacket parsed;
+  // Always parse to extract hash, but route it regardless of success/IP
+  // presence If it's malformed or non-IP (ARP, etc), hash will be 0 and it
+  // goes to FP[0]
+  PacketParser::parse(*pkt_ptr, parsed);
+  size_t h = hashParsedPacket(parsed);
+  if (h == 0)
+    h = lb_stats[id]->dispatched;
+
+  int fp_idx = h % num_fps;
+  fp_queues[fp_idx]->push(pkt_ptr);
+  lb_stats[id]->dispatched++;
+  if (global_reporter) {
+    global_reporter->incrementLBStat(id);
+  }
+}
+
 void lb_thread_func(int id) {
+  std::vector<std::shared_ptr<RawPacket>> batch;
+  batch.reserve(WORKER_BATCH_SIZE);
   while (lb_keep_running || !lb_queues[id]->empty()) {
-    auto opt = lb_queues[id]->popWithTimeout(std::chrono::milliseconds(100));
-    if (opt) {
-      auto pkt_ptr = *opt;
+    batch.clear();
+    size_t n = lb_queues[id]->popBatch(batch, WORKER_BATCH_SIZE,
+                                        std::chrono::milliseconds(100));
+    for (size_t i = 0; i < n; ++i) {
+      process_lb_packet(id, batch[i]);
+    }
+  }
+}
 
-      ParsedPacket parsed;
-      // Always parse to extract hash, but route it regardless of success/IP
-      // presence If it's malformed or non-IP (ARP, etc), hash will be 0 and it
-      // goes to FP[0]
-      PacketParser::parse(*pkt_ptr, parsed);
-      size_t h = hashParsedPacket(parsed);
-      if (h == 0)
-        h = lb_stats[id]->dispatched;
+static void process_fp_packet(int id, const std::shared_ptr<RawPacket>& pkt_ptr) {
+  fp_stats[id]->processed++;
 
-      int fp_idx = h % num_fps;
-      fp_queues[fp_idx]->push(pkt_ptr);
-      lb_stats[id]->dispatched++;
-      if (global_reporter) {
-        global_reporter->incrementLBStat(id);
+  ParsedPacket parsed;
+  if (!PacketParser::parse(*pkt_ptr, parsed)) {
+    // Entirely malformed packet (e.g. truncated ethernet frame)
+    fp_stats[id]->dropped++;
+    total_dropped++;
+    if (global_reporter) {
+      LogEvent ev;
+      ev.l3 = "other";
+      ev.action = "dropped";
+      ev.reason = "malformed_ethernet";
+      ev.thread_id = id;
+      global_reporter->incrementStat("dropped");
+      global_reporter->incrementFPStat(id, "dropped");
+      global_reporter->tryPushLog(std::move(ev));
+    }
+  } else if (parsed.l3 == "ipv4" && global_enforcer &&
+             !parsed.src_ip.empty() &&
+             global_enforcer->isBlocked(parsed.src_ip)) {
+    // Blocked source IP (dropped by blocklist rule - IPv4 only)
+    fp_stats[id]->dropped++;
+    total_dropped++;
+    if (global_reporter) {
+      LogEvent ev;
+      ev.l3 = parsed.l3;
+      ev.src_ip = parsed.src_ip;
+      ev.dst_ip = parsed.dest_ip;
+      ev.src_port = parsed.src_port;
+      ev.dst_port = parsed.dest_port;
+      ev.protocol = parsed.protocol;
+      ev.action = "dropped";
+      ev.reason = "blocklist:ip";
+      ev.thread_id = id;
+      ev.tcp_flags = parsed.tcp_flags;
+      ev.icmp_type = parsed.icmp_type;
+      global_reporter->incrementStat("dropped");
+      global_reporter->incrementFPStat(id, "dropped");
+      global_reporter->tryPushLog(std::move(ev));
+    }
+  } else if (parsed.has_tcp) {
+    fp_stats[id]->forwarded++;
+    total_forwarded++;
+    fp_stats[id]->tcp_packets++;
+
+    // Payload-based protocol classification for forwarded TCP packets
+    if (parsed.payload_length == 0) {
+      if (global_reporter)
+        global_reporter->incrementProto(ProtoClass::TCP_CTRL);
+    } else if (parsed.payload_length >= 5 &&
+               (parsed.payload_data[0] == 0x14 ||
+                parsed.payload_data[0] == 0x15 ||
+                parsed.payload_data[0] == 0x16 ||
+                parsed.payload_data[0] == 0x17) &&
+               parsed.payload_data[1] == 0x03 &&
+               parsed.payload_data[2] <= 0x04) {
+      if (global_reporter)
+        global_reporter->incrementProto(ProtoClass::TLS);
+    } else if (([&]() {
+                 std::string_view p(
+                     reinterpret_cast<const char *>(parsed.payload_data),
+                     parsed.payload_length);
+                 return p.rfind("GET ", 0) == 0 ||
+                        p.rfind("POST ", 0) == 0 ||
+                        p.rfind("PUT ", 0) == 0 ||
+                        p.rfind("HEAD ", 0) == 0 ||
+                        p.rfind("DELETE ", 0) == 0 ||
+                        p.rfind("OPTIONS ", 0) == 0 ||
+                        p.rfind("PATCH ", 0) == 0 ||
+                        p.rfind("HTTP/1.", 0) == 0;
+               })()) {
+      if (global_reporter)
+        global_reporter->incrementProto(ProtoClass::HTTP);
+    } else {
+      if (global_reporter)
+        global_reporter->incrementProto(ProtoClass::TCP_OTHER);
+    }
+
+    bool has_sni = false;
+    std::string sni_val;
+    if (parsed.payload_length > 0) {
+      auto sni =
+          SNIExtractor::extract(parsed.payload_data, parsed.payload_length);
+      if (sni) {
+        fp_stats[id]->sni_found++;
+        has_sni = true;
+        sni_val = *sni;
+        if (global_reporter)
+          global_reporter->incrementSniSeen();
       }
+    }
+    if (global_reporter) {
+      LogEvent ev;
+      ev.l3 = parsed.l3;
+      ev.src_ip = parsed.src_ip;
+      ev.dst_ip = parsed.dest_ip;
+      ev.src_port = parsed.src_port;
+      ev.dst_port = parsed.dest_port;
+      ev.protocol = parsed.protocol;
+      ev.sni = sni_val;
+      ev.action = "forwarded";
+      ev.reason = "clean";
+      ev.thread_id = id;
+      ev.tcp_flags = parsed.tcp_flags;
+      ev.icmp_type = parsed.icmp_type;
+      global_reporter->incrementStat("forwarded");
+      global_reporter->incrementFPStat(id, "forwarded");
+      global_reporter->tryPushLog(std::move(ev));
+    }
+  } else {
+    // Non-TCP protocols and non-IPv4 frames (ARP, IPv6, UDP, ICMP)
+    fp_stats[id]->unhandled++;
+    total_unhandled++;
+    if (global_reporter) {
+      global_reporter->incrementStat("unhandled");
+      global_reporter->incrementFPStat(id, "unhandled");
+      LogEvent ev;
+      ev.l3 = parsed.l3;
+      ev.src_ip = parsed.src_ip;
+      ev.dst_ip = parsed.dest_ip;
+      ev.src_port = parsed.has_udp ? parsed.src_port : 0;
+      ev.dst_port = parsed.has_udp ? parsed.dest_port : 0;
+      ev.protocol = parsed.protocol;
+      ev.action = "unhandled";
+      ev.reason = "non_tcp";
+      ev.thread_id = id;
+      ev.tcp_flags = parsed.tcp_flags;
+      ev.icmp_type = parsed.icmp_type;
+      global_reporter->tryPushLog(std::move(ev));
     }
   }
 }
 
 void fp_thread_func(int id) {
+  std::vector<std::shared_ptr<RawPacket>> batch;
+  batch.reserve(WORKER_BATCH_SIZE);
   while (fp_keep_running || !fp_queues[id]->empty()) {
-    auto opt = fp_queues[id]->popWithTimeout(std::chrono::milliseconds(100));
-    if (opt) {
-      auto pkt_ptr = *opt;
-      fp_stats[id]->processed++;
-
-      ParsedPacket parsed;
-      if (!PacketParser::parse(*pkt_ptr, parsed)) {
-        // Entirely malformed packet (e.g. truncated ethernet frame)
-        fp_stats[id]->dropped++;
-        total_dropped++;
-        if (global_reporter) {
-          LogEvent ev;
-          ev.l3 = "other";
-          ev.action = "dropped";
-          ev.reason = "malformed_ethernet";
-          ev.thread_id = id;
-          global_reporter->incrementStat("dropped");
-          global_reporter->incrementFPStat(id, "dropped");
-          global_reporter->tryPushLog(std::move(ev));
-        }
-      } else if (parsed.l3 == "ipv4" && global_enforcer &&
-                 !parsed.src_ip.empty() &&
-                 global_enforcer->isBlocked(parsed.src_ip)) {
-        // Blocked source IP (dropped by blocklist rule - IPv4 only)
-        fp_stats[id]->dropped++;
-        total_dropped++;
-        if (global_reporter) {
-          LogEvent ev;
-          ev.l3 = parsed.l3;
-          ev.src_ip = parsed.src_ip;
-          ev.dst_ip = parsed.dest_ip;
-          ev.src_port = parsed.src_port;
-          ev.dst_port = parsed.dest_port;
-          ev.protocol = parsed.protocol;
-          ev.action = "dropped";
-          ev.reason = "blocklist:ip";
-          ev.thread_id = id;
-          ev.tcp_flags = parsed.tcp_flags;
-          ev.icmp_type = parsed.icmp_type;
-          global_reporter->incrementStat("dropped");
-          global_reporter->incrementFPStat(id, "dropped");
-          global_reporter->tryPushLog(std::move(ev));
-        }
-      } else if (parsed.has_tcp) {
-        fp_stats[id]->forwarded++;
-        total_forwarded++;
-        fp_stats[id]->tcp_packets++;
-
-        // Payload-based protocol classification for forwarded TCP packets
-        if (parsed.payload_length == 0) {
-          if (global_reporter)
-            global_reporter->incrementProto(ProtoClass::TCP_CTRL);
-        } else if (parsed.payload_length >= 5 &&
-                   (parsed.payload_data[0] == 0x14 ||
-                    parsed.payload_data[0] == 0x15 ||
-                    parsed.payload_data[0] == 0x16 ||
-                    parsed.payload_data[0] == 0x17) &&
-                   parsed.payload_data[1] == 0x03 &&
-                   parsed.payload_data[2] <= 0x04) {
-          if (global_reporter)
-            global_reporter->incrementProto(ProtoClass::TLS);
-        } else if (([&]() {
-                     std::string_view p(
-                         reinterpret_cast<const char *>(parsed.payload_data),
-                         parsed.payload_length);
-                     return p.rfind("GET ", 0) == 0 ||
-                            p.rfind("POST ", 0) == 0 ||
-                            p.rfind("PUT ", 0) == 0 ||
-                            p.rfind("HEAD ", 0) == 0 ||
-                            p.rfind("DELETE ", 0) == 0 ||
-                            p.rfind("OPTIONS ", 0) == 0 ||
-                            p.rfind("PATCH ", 0) == 0 ||
-                            p.rfind("HTTP/1.", 0) == 0;
-                   })()) {
-          if (global_reporter)
-            global_reporter->incrementProto(ProtoClass::HTTP);
-        } else {
-          if (global_reporter)
-            global_reporter->incrementProto(ProtoClass::TCP_OTHER);
-        }
-
-        bool has_sni = false;
-        std::string sni_val;
-        if (parsed.payload_length > 0) {
-          auto sni =
-              SNIExtractor::extract(parsed.payload_data, parsed.payload_length);
-          if (sni) {
-            fp_stats[id]->sni_found++;
-            has_sni = true;
-            sni_val = *sni;
-            if (global_reporter)
-              global_reporter->incrementSniSeen();
-          }
-        }
-        if (global_reporter) {
-          LogEvent ev;
-          ev.l3 = parsed.l3;
-          ev.src_ip = parsed.src_ip;
-          ev.dst_ip = parsed.dest_ip;
-          ev.src_port = parsed.src_port;
-          ev.dst_port = parsed.dest_port;
-          ev.protocol = parsed.protocol;
-          ev.sni = sni_val;
-          ev.action = "forwarded";
-          ev.reason = "clean";
-          ev.thread_id = id;
-          ev.tcp_flags = parsed.tcp_flags;
-          ev.icmp_type = parsed.icmp_type;
-          global_reporter->incrementStat("forwarded");
-          global_reporter->incrementFPStat(id, "forwarded");
-          global_reporter->tryPushLog(std::move(ev));
-        }
-      } else {
-        // Non-TCP protocols and non-IPv4 frames (ARP, IPv6, UDP, ICMP)
-        fp_stats[id]->unhandled++;
-        total_unhandled++;
-        if (global_reporter) {
-          global_reporter->incrementStat("unhandled");
-          global_reporter->incrementFPStat(id, "unhandled");
-          LogEvent ev;
-          ev.l3 = parsed.l3;
-          ev.src_ip = parsed.src_ip;
-          ev.dst_ip = parsed.dest_ip;
-          ev.src_port = parsed.has_udp ? parsed.src_port : 0;
-          ev.dst_port = parsed.has_udp ? parsed.dest_port : 0;
-          ev.protocol = parsed.protocol;
-          ev.action = "unhandled";
-          ev.reason = "non_tcp";
-          ev.thread_id = id;
-          ev.tcp_flags = parsed.tcp_flags;
-          ev.icmp_type = parsed.icmp_type;
-          global_reporter->tryPushLog(std::move(ev));
-        }
-      }
+    batch.clear();
+    size_t n = fp_queues[id]->popBatch(batch, WORKER_BATCH_SIZE,
+                                        std::chrono::milliseconds(100));
+    for (size_t i = 0; i < n; ++i) {
+      process_fp_packet(id, batch[i]);
     }
   }
 }
