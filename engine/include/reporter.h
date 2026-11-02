@@ -42,6 +42,7 @@ public:
     void stop();
 
     static constexpr size_t MAX_WORKERS = 16;
+    static constexpr long long LOG_STREAM_MAXLEN = 200000;
 
     // Fast path uses this. Returns false if queue is full.
     bool tryPushLog(LogEvent event);
@@ -61,6 +62,7 @@ public:
     void initRedisStats(int num_lbs, int num_fps, const std::string& interface_name);
 
     uint64_t getDroppedLogEvents() const { return dropped_events_.load(); }
+    uint64_t getFailedLogEvents() const { return failed_events_.load(); }
 
 private:
     void threadFunc();
@@ -71,6 +73,7 @@ private:
     std::thread thread_;
     std::atomic<bool> keep_running_{false};
     std::atomic<uint64_t> dropped_events_{0};
+    std::atomic<uint64_t> failed_events_{0};
 
     // Pointers to capture thread atomics
     const std::atomic<uint64_t>* bytes_total_ptr_{nullptr};

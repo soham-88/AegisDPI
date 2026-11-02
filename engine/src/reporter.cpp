@@ -3,6 +3,7 @@
 #include <chrono>
 #include <ctime>
 #include <vector>
+#include <optional>
 #include <unistd.h>
 
 namespace DPI {
@@ -119,6 +120,8 @@ void Reporter::initRedisStats(int num_lbs, int num_fps, const std::string& inter
         redis_->hset("dpi:stats", "forwarded", "0");
         redis_->hset("dpi:stats", "dropped", "0");
         redis_->hset("dpi:stats", "unhandled", "0");
+        redis_->hset("dpi:stats", "log_dropped", "0");
+        redis_->hset("dpi:stats", "log_failed", "0");
         for (int i = 0; i < num_lbs; ++i) {
             redis_->hset("dpi:stats", "lb_" + std::to_string(i) + "_dispatched", "0");
         }
@@ -194,6 +197,9 @@ void Reporter::flushStats() {
         if (inc_proto_tcp_other > 0) { tx.hincrby("dpi:stats", "proto_tcp_other", inc_proto_tcp_other); }
         if (inc_tls_sni_seen > 0) { tx.hincrby("dpi:stats", "tls_sni_seen", inc_tls_sni_seen); }
 
+        tx.hset("dpi:stats", "log_dropped", std::to_string(dropped_events_.load(std::memory_order_relaxed)));
+        tx.hset("dpi:stats", "log_failed", std::to_string(failed_events_.load(std::memory_order_relaxed)));
+
         if (bytes_total_ptr_) {
             tx.hset("dpi:stats", "bytes_total", std::to_string(bytes_total_ptr_->load(std::memory_order_relaxed)));
         }
@@ -224,18 +230,23 @@ void Reporter::threadFunc() {
     std::vector<LogEvent> batch;
     batch.reserve(512);
 
-    // Never block on the queue's condition variable to avoid consumer-side
-    // wake-up ping-pong per event. Polling with popBatch(0ms) and sleeping for
-    // 2 ms when fewer than 512 items arrive amortizes context switching while
-    // keeping telemetry latency well within acceptable bounds (~2 ms).
-    while (keep_running_ || !log_queue_.empty()) {
-        batch.clear();
-        size_t count = log_queue_.popBatch(batch, 512, std::chrono::milliseconds(0));
-        
-        if (redis_ && !batch.empty()) {
-            for (const auto& ev : batch) {
-                try {
-                    redis_->xadd("dpi:logs", "*", {
+    std::optional<sw::redis::Pipeline> pipeline;
+
+    auto send_batch = [&](const std::vector<LogEvent>& ev_batch) {
+        if (!redis_ || ev_batch.empty()) return;
+
+        if (!pipeline) {
+            try {
+                pipeline = redis_->pipeline();
+            } catch (const std::exception&) {
+                pipeline.reset();
+            }
+        }
+
+        if (pipeline) {
+            try {
+                for (const auto& ev : ev_batch) {
+                    pipeline->xadd("dpi:logs", "*", {
                         std::make_pair("src_ip", ev.src_ip),
                         std::make_pair("dst_ip", ev.dst_ip),
                         std::make_pair("src_port", std::to_string(ev.src_port)),
@@ -248,12 +259,27 @@ void Reporter::threadFunc() {
                         std::make_pair("tcp_flags", std::to_string(ev.tcp_flags)),
                         std::make_pair("icmp_type", std::to_string(ev.icmp_type)),
                         std::make_pair("l3", ev.l3)
-                    });
-                } catch (const std::exception& e) {
-                    // Ignore redis connection issues silently so we don't spam stdout
+                    }, LOG_STREAM_MAXLEN, true);
                 }
+                pipeline->exec();
+            } catch (const std::exception&) {
+                failed_events_ += ev_batch.size();
+                pipeline.reset();
             }
+        } else {
+            failed_events_ += ev_batch.size();
         }
+    };
+
+    // Never block on the queue's condition variable to avoid consumer-side
+    // wake-up ping-pong per event. Polling with popBatch(0ms) and sleeping for
+    // 2 ms when fewer than 512 items arrive amortizes context switching while
+    // keeping telemetry latency well within acceptable bounds (~2 ms).
+    while (keep_running_ || !log_queue_.empty()) {
+        batch.clear();
+        size_t count = log_queue_.popBatch(batch, 512, std::chrono::milliseconds(0));
+        
+        send_batch(batch);
         
         auto now = std::chrono::steady_clock::now();
         if (now - last_stat_flush > std::chrono::seconds(1)) {
@@ -268,6 +294,14 @@ void Reporter::threadFunc() {
         }
     }
     
+    // Final drain of any remaining log events on shutdown through the pipeline
+    while (!log_queue_.empty()) {
+        batch.clear();
+        size_t count = log_queue_.popBatch(batch, 512, std::chrono::milliseconds(0));
+        if (count == 0) break;
+        send_batch(batch);
+    }
+
     // Final flush
     try {
         flushStats();

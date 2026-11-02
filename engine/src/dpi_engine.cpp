@@ -567,6 +567,8 @@ int main(int argc, char *argv[]) {
   if (global_reporter) {
     std::cout << "Reporter Q Drops : " << global_reporter->getDroppedLogEvents()
               << "\n";
+    std::cout << "Reporter Redis Failures : "
+              << global_reporter->getFailedLogEvents() << "\n";
   }
 
   double processing_seconds = 0.0;
