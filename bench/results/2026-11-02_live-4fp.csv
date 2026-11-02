@@ -1,0 +1,15 @@
+# label: live-4fp
+# date: 2026-11-02 19:48:42 UTC
+# git_commit: 0893ba7
+# nproc: 16
+# cpu_model: 13th Gen Intel(R) Core(TM) i5-13450HX
+# kernel: 6.18.33.2-microsoft-standard-WSL2
+# fps: 4
+# limit: 300000
+# pcap: /tmp/aegis_bench_26000.pcap
+rate_target,sent,achieved_pps,processed,pcap_recv_delta,kernel_drops,capture_loss_pct,logs_delivered,logs_dropped,log_delivery_pct
+50000,300000,50000.16,300000,270297,0,0.00,300000,0,100.00
+100000,300000,100000.33,299992,329695,0,0.00,299992,0,100.00
+200000,300000,200000.66,299984,202721,0,0.01,299984,0,100.00
+400000,300000,400001.06,300000,98893,0,0.00,225911,74089,75.30
+topspeed,300000,413904.42,299378,300111,0,0.21,220595,78783,73.68
