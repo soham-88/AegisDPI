@@ -59,6 +59,7 @@ struct FPStats {
 };
 
 constexpr size_t WORKER_BATCH_SIZE = 256;
+constexpr size_t READER_BATCH_SIZE = 128;
 
 int num_lbs = 1;
 int num_fps = 1;
@@ -79,7 +80,9 @@ std::atomic<uint64_t> total_unhandled{0};
 
 std::shared_ptr<Enforcer> global_enforcer = nullptr;
 
-static void process_lb_packet(int id, const std::shared_ptr<RawPacket>& pkt_ptr) {
+static void process_lb_packet(
+    int id, const std::shared_ptr<RawPacket>& pkt_ptr,
+    std::vector<std::vector<std::shared_ptr<RawPacket>>>& fp_batches) {
   ParsedPacket parsed;
   // Always parse to extract hash, but route it regardless of success/IP
   // presence If it's malformed or non-IP (ARP, etc), hash will be 0 and it
@@ -90,7 +93,7 @@ static void process_lb_packet(int id, const std::shared_ptr<RawPacket>& pkt_ptr)
     h = lb_stats[id]->dispatched;
 
   int fp_idx = h % num_fps;
-  fp_queues[fp_idx]->push(pkt_ptr);
+  fp_batches[fp_idx].push_back(pkt_ptr);
   lb_stats[id]->dispatched++;
   if (global_reporter) {
     global_reporter->incrementLBStat(id);
@@ -100,12 +103,28 @@ static void process_lb_packet(int id, const std::shared_ptr<RawPacket>& pkt_ptr)
 void lb_thread_func(int id) {
   std::vector<std::shared_ptr<RawPacket>> batch;
   batch.reserve(WORKER_BATCH_SIZE);
+  std::vector<std::vector<std::shared_ptr<RawPacket>>> fp_batches(num_fps);
+  for (int i = 0; i < num_fps; ++i) {
+    fp_batches[i].reserve(WORKER_BATCH_SIZE);
+  }
+
   while (lb_keep_running || !lb_queues[id]->empty()) {
     batch.clear();
     size_t n = lb_queues[id]->popBatch(batch, WORKER_BATCH_SIZE,
                                         std::chrono::milliseconds(100));
     for (size_t i = 0; i < n; ++i) {
-      process_lb_packet(id, batch[i]);
+      process_lb_packet(id, batch[i], fp_batches);
+    }
+    for (int i = 0; i < num_fps; ++i) {
+      if (!fp_batches[i].empty()) {
+        fp_queues[i]->pushBatch(fp_batches[i]);
+      }
+    }
+  }
+
+  for (int i = 0; i < num_fps; ++i) {
+    if (!fp_batches[i].empty()) {
+      fp_queues[i]->pushBatch(fp_batches[i]);
     }
   }
 }
@@ -483,6 +502,11 @@ int main(int argc, char *argv[]) {
     if (!reader.open(input_pcap)) {
       keep_running = false;
     } else {
+      std::vector<std::vector<std::shared_ptr<RawPacket>>> lb_batches(num_lbs);
+      for (int i = 0; i < num_lbs; ++i) {
+        lb_batches[i].reserve(READER_BATCH_SIZE);
+      }
+
       RawPacket raw;
       while (keep_running && reader.readNextPacket(raw)) {
         if (!timing_started) {
@@ -494,7 +518,18 @@ int main(int argc, char *argv[]) {
         total_bytes += raw.data.size();
         // Directly distribute to LBs.
         int lb_idx = total_read % num_lbs;
-        lb_queues[lb_idx]->push(std::make_shared<RawPacket>(std::move(raw)));
+        lb_batches[lb_idx].push_back(
+            std::make_shared<RawPacket>(std::move(raw)));
+        if (lb_batches[lb_idx].size() >= READER_BATCH_SIZE) {
+          lb_queues[lb_idx]->pushBatch(lb_batches[lb_idx]);
+        }
+      }
+
+      // Flush any remaining packets before stopping LB threads
+      for (int i = 0; i < num_lbs; ++i) {
+        if (!lb_batches[i].empty()) {
+          lb_queues[i]->pushBatch(lb_batches[i]);
+        }
       }
     }
   }

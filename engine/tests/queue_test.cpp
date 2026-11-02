@@ -172,3 +172,118 @@ TEST(QueueTest, ShutdownWakesBlockedProducerAndConsumer) {
     EXPECT_TRUE(consumer_woke);
 }
 
+// 5. pushBatch preserves order and clears the input vector.
+TEST(QueueTest, PushBatchPreservesOrderAndClearsVector) {
+    DPI::ThreadSafeQueue<int> q(100);
+    std::vector<int> items = {10, 20, 30, 40, 50};
+    q.pushBatch(items);
+
+    EXPECT_TRUE(items.empty());
+    EXPECT_EQ(q.size(), 5u);
+
+    std::vector<int> out;
+    size_t count = q.popBatch(out, 10, std::chrono::milliseconds(10));
+    EXPECT_EQ(count, 5u);
+    std::vector<int> expected = {10, 20, 30, 40, 50};
+    EXPECT_EQ(out, expected);
+    EXPECT_TRUE(q.empty());
+}
+
+// 6. Multi-producer stress using pushBatch: max_size = 64, 4 producers each push 200000 items in batches of 100
+//    (encoded as producer_id, seq), single consumer uses popBatch(…, 32, 50ms).
+//    Assert total = 800000 and per-producer seq strictly increasing. Must finish (no deadlock).
+TEST(QueueTest, MultiProducerPushBatchStress) {
+    constexpr size_t QUEUE_MAX_SIZE = 64;
+    constexpr size_t NUM_PRODUCERS = 4;
+    constexpr size_t ITEMS_PER_PRODUCER = 200000;
+    constexpr size_t BATCH_SIZE = 100;
+    constexpr size_t TOTAL_ITEMS = NUM_PRODUCERS * ITEMS_PER_PRODUCER;
+
+    DPI::ThreadSafeQueue<WorkItem> q(QUEUE_MAX_SIZE);
+
+    std::vector<std::thread> producers;
+    producers.reserve(NUM_PRODUCERS);
+    for (uint32_t p = 0; p < NUM_PRODUCERS; ++p) {
+        producers.emplace_back([&q, p]() {
+            std::vector<WorkItem> batch;
+            batch.reserve(BATCH_SIZE);
+            for (uint32_t seq = 0; seq < ITEMS_PER_PRODUCER; ++seq) {
+                batch.push_back({p, seq});
+                if (batch.size() == BATCH_SIZE) {
+                    q.pushBatch(batch);
+                }
+            }
+            if (!batch.empty()) {
+                q.pushBatch(batch);
+            }
+        });
+    }
+
+    std::vector<int64_t> last_seq(NUM_PRODUCERS, -1);
+    std::vector<WorkItem> batch;
+    batch.reserve(32);
+    size_t total_received = 0;
+
+    auto start_time = std::chrono::steady_clock::now();
+    while (total_received < TOTAL_ITEMS) {
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() > 30) {
+            FAIL() << "Stress test timed out after 30 seconds; potential deadlock in pushBatch";
+            break;
+        }
+
+        batch.clear();
+        size_t n = q.popBatch(batch, 32, std::chrono::milliseconds(50));
+        for (size_t i = 0; i < n; ++i) {
+            const auto& item = batch[i];
+            ASSERT_LT(item.producer_id, NUM_PRODUCERS);
+            EXPECT_EQ(static_cast<int64_t>(item.seq), last_seq[item.producer_id] + 1);
+            last_seq[item.producer_id] = static_cast<int64_t>(item.seq);
+            ++total_received;
+        }
+    }
+
+    for (auto& t : producers) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    EXPECT_EQ(total_received, TOTAL_ITEMS);
+    for (size_t p = 0; p < NUM_PRODUCERS; ++p) {
+        EXPECT_EQ(last_seq[p], static_cast<int64_t>(ITEMS_PER_PRODUCER - 1));
+    }
+}
+
+// 7. shutdown() wakes a producer blocked inside pushBatch on a full queue.
+TEST(QueueTest, ShutdownWakesProducerBlockedInPushBatch) {
+    DPI::ThreadSafeQueue<int> full_q(2);
+    full_q.push(1);
+    full_q.push(2);
+    EXPECT_EQ(full_q.size(), 2u);
+
+    std::atomic<bool> producer_started{false};
+    std::atomic<bool> producer_finished{false};
+    std::vector<int> batch = {3, 4, 5};
+
+    std::thread producer([&full_q, &producer_started, &producer_finished, &batch]() {
+        producer_started = true;
+        full_q.pushBatch(batch); // Will block because queue is full (2/2)
+        producer_finished = true;
+    });
+
+    while (!producer_started) {
+        std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    EXPECT_FALSE(producer_finished);
+
+    full_q.shutdown();
+    producer.join();
+
+    EXPECT_TRUE(producer_finished);
+    EXPECT_TRUE(full_q.isShutdown());
+    EXPECT_TRUE(batch.empty());
+}
+

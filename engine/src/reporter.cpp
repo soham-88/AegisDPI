@@ -2,6 +2,7 @@
 #include <iostream>
 #include <chrono>
 #include <ctime>
+#include <vector>
 #include <unistd.h>
 
 namespace DPI {
@@ -220,29 +221,37 @@ void Reporter::flushStats() {
 
 void Reporter::threadFunc() {
     auto last_stat_flush = std::chrono::steady_clock::now();
+    std::vector<LogEvent> batch;
+    batch.reserve(512);
 
+    // Never block on the queue's condition variable to avoid consumer-side
+    // wake-up ping-pong per event. Polling with popBatch(0ms) and sleeping for
+    // 2 ms when fewer than 512 items arrive amortizes context switching while
+    // keeping telemetry latency well within acceptable bounds (~2 ms).
     while (keep_running_ || !log_queue_.empty()) {
-        auto opt_event = log_queue_.popWithTimeout(std::chrono::milliseconds(100));
+        batch.clear();
+        size_t count = log_queue_.popBatch(batch, 512, std::chrono::milliseconds(0));
         
-        if (opt_event && redis_) {
-            const auto& ev = *opt_event;
-            try {
-                redis_->xadd("dpi:logs", "*", {
-                    std::make_pair("src_ip", ev.src_ip),
-                    std::make_pair("dst_ip", ev.dst_ip),
-                    std::make_pair("src_port", std::to_string(ev.src_port)),
-                    std::make_pair("dst_port", std::to_string(ev.dst_port)),
-                    std::make_pair("protocol", std::to_string(ev.protocol)),
-                    std::make_pair("sni", ev.sni),
-                    std::make_pair("action", ev.action),
-                    std::make_pair("reason", ev.reason),
-                    std::make_pair("thread_id", std::to_string(ev.thread_id)),
-                    std::make_pair("tcp_flags", std::to_string(ev.tcp_flags)),
-                    std::make_pair("icmp_type", std::to_string(ev.icmp_type)),
-                    std::make_pair("l3", ev.l3)
-                });
-            } catch (const std::exception& e) {
-                // Ignore redis connection issues silently so we don't spam stdout
+        if (redis_ && !batch.empty()) {
+            for (const auto& ev : batch) {
+                try {
+                    redis_->xadd("dpi:logs", "*", {
+                        std::make_pair("src_ip", ev.src_ip),
+                        std::make_pair("dst_ip", ev.dst_ip),
+                        std::make_pair("src_port", std::to_string(ev.src_port)),
+                        std::make_pair("dst_port", std::to_string(ev.dst_port)),
+                        std::make_pair("protocol", std::to_string(ev.protocol)),
+                        std::make_pair("sni", ev.sni),
+                        std::make_pair("action", ev.action),
+                        std::make_pair("reason", ev.reason),
+                        std::make_pair("thread_id", std::to_string(ev.thread_id)),
+                        std::make_pair("tcp_flags", std::to_string(ev.tcp_flags)),
+                        std::make_pair("icmp_type", std::to_string(ev.icmp_type)),
+                        std::make_pair("l3", ev.l3)
+                    });
+                } catch (const std::exception& e) {
+                    // Ignore redis connection issues silently so we don't spam stdout
+                }
             }
         }
         
@@ -252,6 +261,10 @@ void Reporter::threadFunc() {
                 flushStats();
             } catch(...) {}
             last_stat_flush = now;
+        }
+
+        if (count < 512) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
     }
     
