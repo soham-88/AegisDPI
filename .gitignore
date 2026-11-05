@@ -24,3 +24,9 @@ ml-service/model.joblib
 # Editor / OS
 .vscode/
 .DS_Store
+
+# Datasets (preserve schedule.json and summary.json)
+datasets/*/events.jsonl
+datasets/*/capture.pcap
+datasets/*/engine.log
+datasets/*/*.log

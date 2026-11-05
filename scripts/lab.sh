@@ -7,6 +7,12 @@ usage() {
 }
 
 cmd_up() {
+    # 0. Check dependencies
+    if ! command -v ethtool &>/dev/null; then
+        echo "Error: ethtool is not installed. Please install it using: sudo apt install -y ethtool" >&2
+        exit 1
+    fi
+
     # 1. Remove old leftovers if present
     if sudo ip netns list 2>/dev/null | grep -qw "ns_admin"; then
         sudo ip netns del ns_admin
@@ -43,15 +49,41 @@ cmd_up() {
     fi
     sudo ip link set veth_lab up
 
-    # 7. Configure namespace end (veth_attacker: 10.10.0.2/24)
+    # 7. Configure namespace end (veth_attacker: 10.10.0.2/24 and secondaries)
     if ! sudo ip netns exec ns_attacker ip -4 addr show dev veth_attacker 2>/dev/null | grep -qw "10.10.0.2/24"; then
         sudo ip netns exec ns_attacker ip addr add 10.10.0.2/24 dev veth_attacker
     fi
+    for ip in 10.10.0.3/24 10.10.0.4/24 10.10.0.5/24 10.10.0.6/24; do
+        if ! sudo ip netns exec ns_attacker ip -4 addr show dev veth_attacker 2>/dev/null | grep -qw "${ip}"; then
+            sudo ip netns exec ns_attacker ip addr add "${ip}" dev veth_attacker
+        fi
+    done
     sudo ip netns exec ns_attacker ip link set veth_attacker up
 
-    # 8. Output addresses
+    # 8. Disable packet offloads on both ends (IDS best practice)
+    # When offloads (TSO/GSO/GRO) are enabled, the Linux network stack coalesces packets into
+    # "super-packets" up to 64 KB instead of real on-wire packets (<= 1514 bytes).
+    # For example, a 20 MB file download appears as a few hundred frames instead of ~14,000,
+    # distorting packet-rate, flow duration, and packet-size distributions used by the ML anomaly detector.
+    # In accordance with Suricata/Snort IDS best practices, disable offloads on capture interfaces.
+    echo "Configuring offload settings on veth interfaces..."
+    for feat in tso gso gro lro; do
+        if ! sudo ethtool -K veth_lab "${feat}" off 2>/dev/null; then
+            echo "Warning: failed to disable ${feat} offload on veth_lab (may be unsupported or fixed)." >&2
+        fi
+        if ! sudo ip netns exec ns_attacker ethtool -K veth_attacker "${feat}" off 2>/dev/null; then
+            echo "Warning: failed to disable ${feat} offload on veth_attacker (may be unsupported or fixed)." >&2
+        fi
+    done
+
+    # 9. Output addresses and offload status
     ip -br addr show veth_lab
     sudo ip netns exec ns_attacker ip -br addr
+
+    echo "=== Offload Features (veth_lab) ==="
+    sudo ethtool -k veth_lab | grep -E "tcp-segmentation-offload|generic-segmentation-offload|generic-receive-offload"
+    echo "=== Offload Features (veth_attacker) ==="
+    sudo ip netns exec ns_attacker ethtool -k veth_attacker | grep -E "tcp-segmentation-offload|generic-segmentation-offload|generic-receive-offload"
 }
 
 cmd_down() {
