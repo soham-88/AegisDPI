@@ -10,6 +10,10 @@
 
 namespace DPI {
 
+// Sized to absorb a ~1 s line-rate burst (e.g. a 20 MB download is ~15K packets)
+// without dropping log events; memory is only used while the queue is actually full.
+constexpr size_t DEFAULT_LOG_QUEUE_CAPACITY = 131072;
+
 struct LogEvent {
     std::string src_ip;
     std::string dst_ip;
@@ -34,8 +38,10 @@ enum class ProtoClass {
 
 class Reporter {
 public:
+    static constexpr size_t DEFAULT_LOG_QUEUE_CAPACITY = DPI::DEFAULT_LOG_QUEUE_CAPACITY;
+
     // Pass pointer to Redis (can be null if running offline/disconnected)
-    Reporter(std::shared_ptr<sw::redis::Redis> redis);
+    Reporter(std::shared_ptr<sw::redis::Redis> redis, size_t log_queue_capacity = DEFAULT_LOG_QUEUE_CAPACITY);
     ~Reporter();
 
     void start();

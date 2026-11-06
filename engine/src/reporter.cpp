@@ -8,8 +8,8 @@
 
 namespace DPI {
 
-Reporter::Reporter(std::shared_ptr<sw::redis::Redis> redis) 
-    : redis_(redis), log_queue_(10000) {
+Reporter::Reporter(std::shared_ptr<sw::redis::Redis> redis, size_t log_queue_capacity) 
+    : redis_(redis), log_queue_(log_queue_capacity) {
     for (size_t i = 0; i < MAX_WORKERS; ++i) {
         lb_dispatched_[i].store(0);
         fp_processed_[i].store(0);

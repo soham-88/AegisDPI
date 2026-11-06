@@ -305,6 +305,7 @@ int main(int argc, char *argv[]) {
   std::string block_ip;
   std::string redis_host = "127.0.0.1";
   std::string redis_password_file;
+  size_t log_queue_size = DEFAULT_LOG_QUEUE_CAPACITY;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -322,6 +323,24 @@ int main(int argc, char *argv[]) {
       redis_password_file = argv[++i];
     } else if (arg == "--redis-host" && i + 1 < argc) {
       redis_host = argv[++i];
+    } else if (arg == "--log-queue-size") {
+      if (i + 1 >= argc) {
+        std::cerr << "Error: --log-queue-size requires a positive integer argument\n";
+        return 1;
+      }
+      std::string val = argv[++i];
+      try {
+        size_t pos = 0;
+        long long parsed = std::stoll(val, &pos);
+        if (pos != val.size() || parsed <= 0) {
+          std::cerr << "Error: --log-queue-size must be a positive integer\n";
+          return 1;
+        }
+        log_queue_size = static_cast<size_t>(parsed);
+      } catch (...) {
+        std::cerr << "Error: --log-queue-size must be a positive integer\n";
+        return 1;
+      }
     } else if (input_pcap.empty() && live_iface.empty()) {
       input_pcap = arg;
     } else if (output_pcap.empty()) {
@@ -333,7 +352,7 @@ int main(int argc, char *argv[]) {
     std::cerr << "Usage: " << argv[0]
               << " [--replay <file> | --live <iface>] [--lbs N] [--fps N] "
                  "[--block-ip <ip>] [--redis-host <ip>] [--redis-password-file "
-                 "<path>]\n";
+                 "<path>] [--log-queue-size <n>]\n";
     return 1;
   }
 
@@ -347,6 +366,7 @@ int main(int argc, char *argv[]) {
   }
   std::cout << "Configured with " << num_lbs << " Load Balancer(s) and "
             << num_fps << " Fast Path(s).\n";
+  std::cout << "Reporter queue capacity: " << log_queue_size << "\n";
 
   std::shared_ptr<Enforcer> enforcer;
   if (!live_iface.empty()) {
@@ -409,7 +429,7 @@ int main(int argc, char *argv[]) {
   std::atomic<uint64_t> pcap_drop{0};
   std::atomic<uint64_t> pcap_ifdrop{0};
 
-  global_reporter = std::make_shared<Reporter>(redis_client);
+  global_reporter = std::make_shared<Reporter>(redis_client, log_queue_size);
   global_reporter->setCaptureStatsSources(&bytes_total, &pcap_recv, &pcap_drop,
                                           &pcap_ifdrop);
   global_reporter->start();
