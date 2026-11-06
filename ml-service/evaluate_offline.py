@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
 AegisDPI — Offline Evaluation Tool
-Evaluates the ML anomaly detection model against recorded labelled datasets.
+Evaluates the ML anomaly detection model (v1 or v2) against recorded labelled datasets.
 
 Simulates the real-time sliding window admission, tick evaluation, and scoring
 without modifying model weights, baselines, or production code.
 """
 
 import argparse
-import collections
 import datetime
 import json
-import math
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-# Import local ML modules
-from window_logic import WindowAdmitter
-from model import AnomalyModel, aggregate_features, FEATURE_NAMES
+# Simulation and feature modules
+from offline_sim import simulate_windows
+from model import AnomalyModel, aggregate_features
+from features_v2 import FEATURE_NAMES_V2, extract_features_v2
+from model_v2 import AnomalyModelV2
 
 try:
     import numpy as np
@@ -62,6 +62,13 @@ def parse_args() -> argparse.Namespace:
         required=True,
         type=str,
         help="Identifier label for this evaluation run",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=["v1", "v2"],
+        default="v1",
+        help="Model version to evaluate (v1 or v2, default: v1)",
     )
     parser.add_argument(
         "--local-ips",
@@ -139,18 +146,19 @@ def run_evaluation():
             if ip_clean:
                 local_ips_set.add(ip_clean)
 
-    admitter = WindowAdmitter(local_ips_set)
+    # Load ML detector model
+    if args.model == "v1":
+        model_path = os.getenv("MODEL_PATH", str(script_dir / "model.joblib"))
+        baselines_path = os.getenv("BASELINES_PATH", str(script_dir / "baselines.json"))
+        meta_path = os.getenv("MODEL_META_PATH", str(script_dir / "model_meta.json"))
+        model = AnomalyModel(model_path, baselines_path, meta_path)
+        model.load()
+    else:
+        model_dir = os.getenv("MODEL_V2_DIR", str(script_dir / "models" / "v2"))
+        model = AnomalyModelV2(model_dir)
+        model.load()
 
-    # Load ML model
-    model_path = os.getenv("MODEL_PATH", str(script_dir / "model.joblib"))
-    baselines_path = os.getenv("BASELINES_PATH", str(script_dir / "baselines.json"))
-    meta_path = os.getenv("MODEL_META_PATH", str(script_dir / "model_meta.json"))
-
-    model = AnomalyModel(model_path, baselines_path, meta_path)
-    model.load()
-
-    # Pre-read events to verify timestamps and find boundary ts
-    # Memory footprint for ~700k events is ~180MB, totally reasonable and enables fast sorted iteration
+    # Read events
     events_list: List[Tuple[float, Dict[str, Any]]] = []
     with open(events_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -164,98 +172,63 @@ def run_evaluation():
         print("No events found in dataset.", file=sys.stderr)
         sys.exit(1)
 
-    # Ensure events are ordered by ts
     events_list.sort(key=lambda x: x[0])
-
-    first_ts = events_list[0][0]
-    last_ts = events_list[-1][0]
     total_events = len(events_list)
 
-    # Tick simulation setup
+    # Simulation setup
     tick_interval = args.tick_interval
     window_size = 5.0
     grace = args.grace
 
-    ip_windows: Dict[str, collections.deque] = collections.defaultdict(collections.deque)
-    event_idx = 0
     scored_records: List[Dict[str, Any]] = []
 
-    current_tick = first_ts
-    while current_tick <= last_ts:
-        # Ingest events up to current_tick
-        while event_idx < total_events and events_list[event_idx][0] <= current_tick:
-            ts, event = events_list[event_idx]
-            src_ip = admitter.admit(event, ts)
-            if src_ip:
-                ip_windows[src_ip].append((ts, event))
-            event_idx += 1
-
-        # Periodic flow table expiration
-        admitter.expire_flows(current_tick)
-
-        # Sliding window pruning
-        cutoff = current_tick - window_size
-        active_ips = sorted(list(ip_windows.keys()))
-        for src_ip in active_ips:
-            window = ip_windows[src_ip]
-            while window and window[0][0] < cutoff:
-                window.popleft()
-
-            if not window:
-                del ip_windows[src_ip]
-                continue
-
-            # Minimum 3 events in 5-second window required for scoring
-            if len(window) < 3:
-                continue
-
-            # Note: Blocking is NOT simulated (no IP is removed after an ANOMALOUS verdict)
-            events = [item[1] for item in window]
-            features = aggregate_features(events, window_seconds=window_size)
+    for current_tick, src_ip, window_events in simulate_windows(
+        events_list,
+        local_ips_set,
+        tick_interval=tick_interval,
+        window_s=window_size,
+        min_events=3,
+    ):
+        if args.model == "v1":
+            features = aggregate_features(window_events, window_seconds=window_size)
+            raw_score, conf, verdict, feat_contribs, desc = model.score(features)
+        else:
+            features = extract_features_v2(window_events, window_s=window_size)
             raw_score, conf, verdict, feat_contribs, desc = model.score(features)
 
-            # Determine ground truth label
-            # POSITIVE: attack entry matches src_ip and start_ts <= tick <= end_ts + grace
-            # BENIGN: benign entry matches src_ip and start_ts <= tick <= end_ts
-            # UNLABELLED: anything else
-            assigned_label = "unlabelled"
-            matched_entry_label = None
+        # Ground truth label assignment
+        assigned_label = "unlabelled"
+        matched_entry_label = None
 
-            for entry in schedule.get("entries", []):
-                if entry.get("src_ip") == src_ip:
-                    start_ts = float(entry["start_ts"])
-                    end_ts = float(entry["end_ts"])
-                    kind = entry.get("kind")
-                    if kind == "attack" and (start_ts <= current_tick <= end_ts + grace):
-                        assigned_label = "positive"
-                        matched_entry_label = entry.get("label")
-                        break
-                    elif kind == "benign" and (start_ts <= current_tick <= end_ts):
-                        assigned_label = "benign"
-                        matched_entry_label = entry.get("label")
-                        break
+        for entry in schedule.get("entries", []):
+            if entry.get("src_ip") == src_ip:
+                start_ts = float(entry["start_ts"])
+                end_ts = float(entry["end_ts"])
+                kind = entry.get("kind")
+                if kind == "attack" and (start_ts <= current_tick <= end_ts + grace):
+                    assigned_label = "positive"
+                    matched_entry_label = entry.get("label")
+                    break
+                elif kind == "benign" and (start_ts <= current_tick <= end_ts):
+                    assigned_label = "benign"
+                    matched_entry_label = entry.get("label")
+                    break
 
-            scored_records.append({
-                "tick": current_tick,
-                "src_ip": src_ip,
-                "confidence": conf,
-                "verdict": verdict,
-                "label": assigned_label,
-                "entry_label": matched_entry_label,
-                "features": features,
-            })
-
-        current_tick += tick_interval
-
-    # Ingest any trailing events if loop terminated right before last_ts
-    while event_idx < total_events:
-        event_idx += 1
+        scored_records.append({
+            "tick": current_tick,
+            "src_ip": src_ip,
+            "raw_score": raw_score,
+            "confidence": conf,
+            "verdict": verdict,
+            "label": assigned_label,
+            "entry_label": matched_entry_label,
+            "features": features,
+        })
 
     # Analysis & Metrics Calculation
     total_scored_ticks = len(scored_records)
     unlabelled_ticks = sum(1 for r in scored_records if r["label"] == "unlabelled")
 
-    # Group schedule entries by kind
     attack_entries = [e for e in schedule.get("entries", []) if e.get("kind") == "attack"]
     benign_entries = [e for e in schedule.get("entries", []) if e.get("kind") == "benign"]
 
@@ -271,8 +244,8 @@ def run_evaluation():
         ticks = [r for r in scored_records if r["entry_label"] == lbl and r["label"] == "positive"]
         num_ticks = len(ticks)
 
-        anom_ticks = [r for r in ticks if r["confidence"] >= 0.85]
-        susp_ticks = [r for r in ticks if r["confidence"] >= 0.60]
+        anom_ticks = [r for r in ticks if r["verdict"] == "ANOMALOUS"]
+        susp_ticks = [r for r in ticks if r["verdict"] in ("ANOMALOUS", "SUSPICIOUS")]
 
         detected_anom = len(anom_ticks) > 0
         time_to_first_anom = (
@@ -312,8 +285,8 @@ def run_evaluation():
         ticks = [r for r in scored_records if r["entry_label"] == lbl and r["label"] == "benign"]
         num_ticks = len(ticks)
 
-        anom_ticks = [r for r in ticks if r["confidence"] >= 0.85]
-        susp_ticks = [r for r in ticks if 0.60 <= r["confidence"] < 0.85]
+        anom_ticks = [r for r in ticks if r["verdict"] == "ANOMALOUS"]
+        susp_ticks = [r for r in ticks if r["verdict"] == "SUSPICIOUS"]
 
         # Alert episodes at ANOMALOUS: consecutive flagged ticks merged into one episode
         alert_episodes = 0
@@ -321,7 +294,7 @@ def run_evaluation():
         prev_tick: Optional[float] = None
 
         for r in ticks:
-            is_anom = (r["confidence"] >= 0.85)
+            is_anom = (r["verdict"] == "ANOMALOUS")
             t = r["tick"]
             if is_anom:
                 if not in_episode or prev_tick is None or (t - prev_tick > tick_interval + 1e-4):
@@ -354,18 +327,20 @@ def run_evaluation():
         })
 
     # --- Overall Tick-Level Metrics ---
-    # Filter to labelled ticks (positive or benign)
     labelled_records = [r for r in scored_records if r["label"] in ("positive", "benign")]
     has_positives = any(r["label"] == "positive" for r in labelled_records)
     has_benigns = any(r["label"] == "benign" for r in labelled_records)
 
     overall_metrics: Dict[str, Any] = {}
 
-    for name, thresh in [("anomalous_threshold_0.85", 0.85), ("suspicious_threshold_0.60", 0.60)]:
-        tp = sum(1 for r in labelled_records if r["label"] == "positive" and r["confidence"] >= thresh)
-        fp = sum(1 for r in labelled_records if r["label"] == "benign" and r["confidence"] >= thresh)
-        fn = sum(1 for r in labelled_records if r["label"] == "positive" and r["confidence"] < thresh)
-        tn = sum(1 for r in labelled_records if r["label"] == "benign" and r["confidence"] < thresh)
+    for name, op_predicate in [
+        ("anomalous_threshold", lambda r: r["verdict"] == "ANOMALOUS"),
+        ("suspicious_threshold", lambda r: r["verdict"] in ("ANOMALOUS", "SUSPICIOUS")),
+    ]:
+        tp = sum(1 for r in labelled_records if r["label"] == "positive" and op_predicate(r))
+        fp = sum(1 for r in labelled_records if r["label"] == "benign" and op_predicate(r))
+        fn = sum(1 for r in labelled_records if r["label"] == "positive" and not op_predicate(r))
+        tn = sum(1 for r in labelled_records if r["label"] == "benign" and not op_predicate(r))
 
         precision = tp / (tp + fp) if (tp + fp) > 0 else (0.0 if has_positives else None)
         recall = tp / (tp + fn) if (tp + fn) > 0 else (0.0 if has_positives else None)
@@ -392,7 +367,12 @@ def run_evaluation():
     pr_auc = None
     if has_positives and has_benigns and np is not None and roc_auc_score is not None:
         y_true = np.array([1 if r["label"] == "positive" else 0 for r in labelled_records])
-        y_score = np.array([r["confidence"] for r in labelled_records])
+        # v1 uses confidence; v2 uses continuous raw_score (anomaly score)
+        if args.model == "v1":
+            y_score = np.array([r["confidence"] for r in labelled_records])
+        else:
+            y_score = np.array([r["raw_score"] for r in labelled_records])
+
         try:
             roc_auc = float(roc_auc_score(y_true, y_score))
             pr_auc = float(average_precision_score(y_true, y_score))
@@ -412,6 +392,7 @@ def run_evaluation():
         "header": {
             "label": args.label,
             "dataset": dataset_name,
+            "model_version": args.model,
             "git_commit": git_hash,
             "events_count": total_events,
             "scored_ticks_count": total_scored_ticks,
@@ -441,9 +422,10 @@ def run_evaluation():
 
     # --- Print Terminal Tables ---
     print("\n" + "=" * 80)
-    print(f"AEGIS-DPI OFFLINE EVALUATION REPORT")
+    print(f"AEGIS-DPI OFFLINE EVALUATION REPORT (Model {args.model.upper()})")
     print("=" * 80)
     print(f"Label:                 {args.label}")
+    print(f"Model:                 {args.model.upper()}")
     print(f"Dataset:               {dataset_name} ({dataset_path})")
     print(f"Git Short Commit:      {git_hash}")
     print(f"Total Events Read:     {total_events:,}")
@@ -522,12 +504,15 @@ def run_evaluation():
 
     # 3. Overall Metrics Table
     print("--- OVERALL METRICS ---")
+    op_label_anom = "ANOMALOUS (conf >= 0.85)" if args.model == "v1" else "ANOMALOUS"
+    op_label_susp = "SUSPICIOUS (conf >= 0.60)" if args.model == "v1" else "SUSPICIOUS-or-higher"
+
     if has_positives:
         metrics_headers = ["Operating Point", "TP", "FP", "FN", "TN", "Precision", "Recall", "F1-Score", "FPR"]
         metrics_rows = []
         for name, label_str in [
-            ("anomalous_threshold_0.85", "ANOMALOUS (conf >= 0.85)"),
-            ("suspicious_threshold_0.60", "SUSPICIOUS (conf >= 0.60)"),
+            ("anomalous_threshold", op_label_anom),
+            ("suspicious_threshold", op_label_susp),
         ]:
             m = overall_metrics[name]
             prec_str = f"{m['precision']:.4f}" if m["precision"] is not None else "n/a"
@@ -553,8 +538,8 @@ def run_evaluation():
         metrics_headers = ["Operating Point", "FP", "TN", "FPR"]
         metrics_rows = []
         for name, label_str in [
-            ("anomalous_threshold_0.85", "ANOMALOUS (conf >= 0.85)"),
-            ("suspicious_threshold_0.60", "SUSPICIOUS (conf >= 0.60)"),
+            ("anomalous_threshold", op_label_anom),
+            ("suspicious_threshold", op_label_susp),
         ]:
             m = overall_metrics[name]
             metrics_rows.append([
@@ -571,4 +556,3 @@ def run_evaluation():
 
 if __name__ == "__main__":
     run_evaluation()
-

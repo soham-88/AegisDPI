@@ -1,0 +1,91 @@
+{
+  "header": {
+    "label": "v2-isoforest",
+    "dataset": "benign-train",
+    "model_version": "v2",
+    "git_commit": "bee9d6f",
+    "events_count": 377731,
+    "scored_ticks_count": 3156,
+    "unlabelled_ticks_count": 0,
+    "tick_interval_s": 1.0,
+    "local_ips": [
+      "10.10.0.1",
+      "10.255.255.254"
+    ],
+    "grace_s": 5.0
+  },
+  "blocking_simulation": "Blocking is NOT simulated (no IP is removed after an ANOMALOUS verdict).",
+  "attacks": [],
+  "benign": [
+    {
+      "label": "benign_browser",
+      "src_ip": "10.10.0.3",
+      "duration_s": 1800.016461133957,
+      "scored_ticks": 1679,
+      "anomalous_ticks": 0,
+      "suspicious_ticks": 3,
+      "alert_episodes_anomalous": 0,
+      "episodes_per_hour": 0.0,
+      "max_confidence": 0.9974506054811982,
+      "highest_confidence_features": {
+        "log_pps": 3.484312288372662,
+        "log_syn_rate": 0.9555114450274365,
+        "syn_ratio": 0.05161290322580645,
+        "log_rst_rate": 0.0,
+        "log_icmp_echo_rate": 0.4700036292457356,
+        "log_udp_rate": 0.0,
+        "log_unique_dst_ports": 1.3862943611198906,
+        "log_unique_src_ports": 2.302585092994046,
+        "log_pkts_per_flow": 2.920769235080536,
+        "unique_dst_ips": 1.0
+      }
+    },
+    {
+      "label": "benign_heavy_user",
+      "src_ip": "10.10.0.4",
+      "duration_s": 1800.016461133957,
+      "scored_ticks": 1477,
+      "anomalous_ticks": 0,
+      "suspicious_ticks": 12,
+      "alert_episodes_anomalous": 0,
+      "episodes_per_hour": 0.0,
+      "max_confidence": 0.9974506054811982,
+      "highest_confidence_features": {
+        "log_pps": 5.356586274672012,
+        "log_syn_rate": 0.33647223662121295,
+        "syn_ratio": 0.0018957345971563982,
+        "log_rst_rate": 0.0,
+        "log_icmp_echo_rate": 0.0,
+        "log_udp_rate": 0.0,
+        "log_unique_dst_ports": 1.0986122886681096,
+        "log_unique_src_ports": 1.0986122886681096,
+        "log_pkts_per_flow": 6.270042805310292,
+        "unique_dst_ips": 1.0
+      }
+    }
+  ],
+  "overall_metrics": {
+    "anomalous_threshold": {
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3156,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "fpr": 0.0
+    },
+    "suspicious_threshold": {
+      "tp": 0,
+      "fp": 15,
+      "fn": 0,
+      "tn": 3141,
+      "precision": 0.0,
+      "recall": null,
+      "f1": null,
+      "fpr": 0.004752851711026616
+    },
+    "roc_auc": null,
+    "pr_auc": null
+  }
+}
