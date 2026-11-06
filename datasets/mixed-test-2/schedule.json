@@ -1,0 +1,93 @@
+{
+  "name": "mixed-test-2",
+  "mode": "mixed",
+  "seed": 2026,
+  "started_at": 1793993469.734451,
+  "ended_at": 1793994030.721407,
+  "local_ips": [
+    "10.10.0.1"
+  ],
+  "entries": [
+    {
+      "label": "benign_browser",
+      "src_ip": "10.10.0.3",
+      "start_ts": 1793993469.734451,
+      "end_ts": 1793994030.721407,
+      "tool": "curl/ping",
+      "command": "browser traffic loop",
+      "kind": "benign"
+    },
+    {
+      "label": "benign_heavy_user",
+      "src_ip": "10.10.0.4",
+      "start_ts": 1793993469.734451,
+      "end_ts": 1793994030.721407,
+      "tool": "curl",
+      "command": "heavy user traffic loop",
+      "kind": "benign"
+    },
+    {
+      "label": "icmp_flood_high",
+      "src_ip": "10.10.0.2",
+      "start_ts": 1793993589.747504,
+      "end_ts": 1793993619.910285,
+      "tool": "hping3",
+      "command": "hping3 --icmp -i u200 -I veth_attacker -a 10.10.0.2 10.10.0.1",
+      "kind": "attack"
+    },
+    {
+      "label": "syn_flood_high",
+      "src_ip": "10.10.0.2",
+      "start_ts": 1793993649.949666,
+      "end_ts": 1793993680.105685,
+      "tool": "hping3",
+      "command": "hping3 -S -p 8080 -i u200 -I veth_attacker -a 10.10.0.2 10.10.0.1",
+      "kind": "attack"
+    },
+    {
+      "label": "udp_flood_high",
+      "src_ip": "10.10.0.2",
+      "start_ts": 1793993710.144053,
+      "end_ts": 1793993740.298481,
+      "tool": "hping3",
+      "command": "hping3 --udp -p 9999 -i u200 -I veth_attacker -a 10.10.0.2 10.10.0.1",
+      "kind": "attack"
+    },
+    {
+      "label": "port_scan_fast",
+      "src_ip": "10.10.0.5",
+      "start_ts": 1793993770.336358,
+      "end_ts": 1793993775.076736,
+      "tool": "nmap",
+      "command": "nmap -sS -Pn -T4 -p 1-5000 -S 10.10.0.5 -e veth_attacker 10.10.0.1",
+      "kind": "attack"
+    },
+    {
+      "label": "syn_flood_low",
+      "src_ip": "10.10.0.6",
+      "start_ts": 1793993805.116906,
+      "end_ts": 1793993835.284054,
+      "tool": "hping3",
+      "command": "hping3 -S -p 8080 -i u5000 -I veth_attacker -a 10.10.0.6 10.10.0.1",
+      "kind": "attack"
+    },
+    {
+      "label": "icmp_flood_low",
+      "src_ip": "10.10.0.6",
+      "start_ts": 1793993865.322792,
+      "end_ts": 1793993895.504155,
+      "tool": "hping3",
+      "command": "hping3 --icmp -i u10000 -I veth_attacker -a 10.10.0.6 10.10.0.1",
+      "kind": "attack"
+    },
+    {
+      "label": "port_scan_slow",
+      "src_ip": "10.10.0.5",
+      "start_ts": 1793993925.545995,
+      "end_ts": 1793993970.679598,
+      "tool": "nmap",
+      "command": "nmap -sS -Pn -T2 -p 1-100 -S 10.10.0.5 -e veth_attacker 10.10.0.1",
+      "kind": "attack"
+    }
+  ]
+}

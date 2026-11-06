@@ -1,0 +1,29 @@
+{
+  "duration": 560.987,
+  "total_events": 907479,
+  "events_per_src_ip": {
+    "10.10.0.1": 355658,
+    "10.10.0.4": 6178,
+    "10.10.0.3": 6810,
+    "": 20,
+    "10.10.0.2": 519057,
+    "10.10.0.5": 5112,
+    "10.255.255.254": 8,
+    "10.10.0.6": 14636
+  },
+  "events_per_label": {
+    "benign_browser": 6810,
+    "benign_heavy_user": 6178,
+    "icmp_flood_high": 130107,
+    "syn_flood_high": 257459,
+    "udp_flood_high": 131489,
+    "port_scan_fast": 5005,
+    "syn_flood_low": 11676,
+    "icmp_flood_low": 2959,
+    "port_scan_slow": 106
+  },
+  "log_dropped": 0,
+  "log_failed": 0,
+  "pcap_file_size": 176357457,
+  "valid": true
+}
