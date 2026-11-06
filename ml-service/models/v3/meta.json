@@ -1,0 +1,73 @@
+{
+  "model_version": "v3",
+  "base_model_dir": "models/v2",
+  "guard_features": {
+    "log_syn_rate": {
+      "kind": "rate",
+      "human_name": "SYN packets/sec"
+    },
+    "log_rst_rate": {
+      "kind": "rate",
+      "human_name": "RST packets/sec"
+    },
+    "log_icmp_echo_rate": {
+      "kind": "rate",
+      "human_name": "ICMP echo requests/sec"
+    },
+    "log_udp_rate": {
+      "kind": "rate",
+      "human_name": "UDP packets/sec"
+    },
+    "log_unique_dst_ports": {
+      "kind": "count",
+      "human_name": "distinct destination ports (5 s)"
+    },
+    "log_unique_src_ports": {
+      "kind": "count",
+      "human_name": "distinct source ports (5 s)"
+    }
+  },
+  "multiplier": 3.0,
+  "margins": {
+    "rate": 10.0,
+    "count": 10.0
+  },
+  "normal_max_raw": {
+    "log_syn_rate": 4.199999999999999,
+    "log_rst_rate": 0.0,
+    "log_icmp_echo_rate": 1.0,
+    "log_udp_rate": 0.0,
+    "log_unique_dst_ports": 3.0,
+    "log_unique_src_ports": 21.000000000000004
+  },
+  "limit_raw": {
+    "log_syn_rate": 14.2,
+    "log_rst_rate": 10.0,
+    "log_icmp_echo_rate": 11.0,
+    "log_udp_rate": 10.0,
+    "log_unique_dst_ports": 13.0,
+    "log_unique_src_ports": 63.000000000000014
+  },
+  "validation_guard_hits": {
+    "log_syn_rate": 0,
+    "log_rst_rate": 0,
+    "log_icmp_echo_rate": 0,
+    "log_udp_rate": 0,
+    "log_unique_dst_ports": 0,
+    "log_unique_src_ports": 0
+  },
+  "train_vectors_count": 3156,
+  "val_vectors_count": 1569,
+  "train_sources": {
+    "10.10.0.4": 1477,
+    "10.10.0.3": 1679
+  },
+  "val_sources": {
+    "10.10.0.3": 840,
+    "10.10.0.4": 729
+  },
+  "train_dataset": "benign-train",
+  "val_dataset": "benign-val",
+  "git_commit": "bd077a7",
+  "timestamp": "2026-11-06T19:26:52.350475+00:00"
+}

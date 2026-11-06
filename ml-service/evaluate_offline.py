@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AegisDPI — Offline Evaluation Tool
-Evaluates the ML anomaly detection model (v1 or v2) against recorded labelled datasets.
+Evaluates the ML anomaly detection model (v1, v2, or v3) against recorded labelled datasets.
 
 Simulates the real-time sliding window admission, tick evaluation, and scoring
 without modifying model weights, baselines, or production code.
@@ -21,6 +21,7 @@ from offline_sim import simulate_windows
 from model import AnomalyModel, aggregate_features
 from features_v2 import FEATURE_NAMES_V2, extract_features_v2
 from model_v2 import AnomalyModelV2
+from model_v3 import AnomalyModelV3
 
 try:
     import numpy as np
@@ -66,9 +67,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["v1", "v2"],
+        choices=["v1", "v2", "v3"],
         default="v1",
-        help="Model version to evaluate (v1 or v2, default: v1)",
+        help="Model version to evaluate (v1, v2, or v3, default: v1)",
     )
     parser.add_argument(
         "--local-ips",
@@ -153,9 +154,13 @@ def run_evaluation():
         meta_path = os.getenv("MODEL_META_PATH", str(script_dir / "model_meta.json"))
         model = AnomalyModel(model_path, baselines_path, meta_path)
         model.load()
-    else:
+    elif args.model == "v2":
         model_dir = os.getenv("MODEL_V2_DIR", str(script_dir / "models" / "v2"))
         model = AnomalyModelV2(model_dir)
+        model.load()
+    else:
+        model_dir = os.getenv("MODEL_V3_DIR", str(script_dir / "models" / "v3"))
+        model = AnomalyModelV3(model_dir)
         model.load()
 
     # Read events
@@ -180,6 +185,21 @@ def run_evaluation():
     window_size = 5.0
     grace = args.grace
 
+    attack_entries = [e for e in schedule.get("entries", []) if e.get("kind") == "attack"]
+    benign_entries = [e for e in schedule.get("entries", []) if e.get("kind") == "benign"]
+
+    # Track first admitted event timestamp for each attack
+    first_attack_event_ts: Dict[str, Optional[float]] = {
+        a["label"]: None for a in attack_entries
+    }
+
+    def on_admit(ts: float, admitted_ip: str, event: Dict[str, Any]):
+        for a in attack_entries:
+            lbl = a["label"]
+            if first_attack_event_ts[lbl] is None:
+                if admitted_ip == a["src_ip"] and (a["start_ts"] <= ts <= a["end_ts"] + grace):
+                    first_attack_event_ts[lbl] = ts
+
     scored_records: List[Dict[str, Any]] = []
 
     for current_tick, src_ip, window_events in simulate_windows(
@@ -188,13 +208,20 @@ def run_evaluation():
         tick_interval=tick_interval,
         window_s=window_size,
         min_events=3,
+        on_admitted_event=on_admit,
     ):
         if args.model == "v1":
             features = aggregate_features(window_events, window_seconds=window_size)
             raw_score, conf, verdict, feat_contribs, desc = model.score(features)
+            trigger = None
+        elif args.model == "v2":
+            features = extract_features_v2(window_events, window_s=window_size)
+            raw_score, conf, verdict, feat_contribs, desc = model.score(features)
+            trigger = None
         else:
             features = extract_features_v2(window_events, window_s=window_size)
             raw_score, conf, verdict, feat_contribs, desc = model.score(features)
+            trigger = getattr(model, "last_trigger", None)
 
         # Ground truth label assignment
         assigned_label = "unlabelled"
@@ -222,15 +249,13 @@ def run_evaluation():
             "verdict": verdict,
             "label": assigned_label,
             "entry_label": matched_entry_label,
+            "trigger": trigger,
             "features": features,
         })
 
     # Analysis & Metrics Calculation
     total_scored_ticks = len(scored_records)
     unlabelled_ticks = sum(1 for r in scored_records if r["label"] == "unlabelled")
-
-    attack_entries = [e for e in schedule.get("entries", []) if e.get("kind") == "attack"]
-    benign_entries = [e for e in schedule.get("entries", []) if e.get("kind") == "benign"]
 
     # --- Per Attack Entry Metrics ---
     attack_results = []
@@ -248,8 +273,14 @@ def run_evaluation():
         susp_ticks = [r for r in ticks if r["verdict"] in ("ANOMALOUS", "SUSPICIOUS")]
 
         detected_anom = len(anom_ticks) > 0
+        first_anom_tick = anom_ticks[0]["tick"] if detected_anom else None
         time_to_first_anom = (
-            anom_ticks[0]["tick"] - start_ts if detected_anom else None
+            first_anom_tick - start_ts if detected_anom else None
+        )
+
+        pkt_ts = first_attack_event_ts.get(lbl)
+        time_to_first_anom_from_pkt = (
+            (first_anom_tick - pkt_ts) if (detected_anom and pkt_ts is not None) else None
         )
 
         detected_susp = len(susp_ticks) > 0
@@ -260,17 +291,27 @@ def run_evaluation():
         share_anom = (len(anom_ticks) / num_ticks) if num_ticks > 0 else 0.0
         max_conf = max((r["confidence"] for r in ticks), default=0.0)
 
+        # Trigger breakdown for v3
+        guard_triggers = sum(1 for r in anom_ticks if r["trigger"] == "guard")
+        iforest_triggers = sum(1 for r in anom_ticks if r["trigger"] == "iforest")
+        both_triggers = sum(1 for r in anom_ticks if r["trigger"] == "both")
+
         attack_results.append({
             "label": lbl,
             "src_ip": src_ip,
             "duration_s": duration_s,
             "scored_ticks": num_ticks,
+            "first_attack_event_ts": pkt_ts,
             "detected_anomalous": detected_anom,
             "time_to_first_anomalous_s": time_to_first_anom,
+            "time_to_first_anomalous_from_packet_s": time_to_first_anom_from_pkt,
             "detected_suspicious": detected_susp,
             "time_to_first_suspicious_s": time_to_first_susp,
             "anomalous_tick_share": share_anom,
             "max_confidence": max_conf,
+            "guard_triggers": guard_triggers,
+            "iforest_triggers": iforest_triggers,
+            "both_triggers": both_triggers,
         })
 
     # --- Per Benign Entry Metrics ---
@@ -313,6 +354,11 @@ def run_evaluation():
             highest_conf_tick["features"] if highest_conf_tick else {}
         )
 
+        # Trigger breakdown for v3
+        guard_triggers = sum(1 for r in anom_ticks if r["trigger"] == "guard")
+        iforest_triggers = sum(1 for r in anom_ticks if r["trigger"] == "iforest")
+        both_triggers = sum(1 for r in anom_ticks if r["trigger"] == "both")
+
         benign_results.append({
             "label": lbl,
             "src_ip": src_ip,
@@ -324,6 +370,9 @@ def run_evaluation():
             "episodes_per_hour": episodes_per_hour,
             "max_confidence": max_conf,
             "highest_confidence_features": highest_conf_features,
+            "guard_triggers": guard_triggers,
+            "iforest_triggers": iforest_triggers,
+            "both_triggers": both_triggers,
         })
 
     # --- Overall Tick-Level Metrics ---
@@ -367,7 +416,6 @@ def run_evaluation():
     pr_auc = None
     if has_positives and has_benigns and np is not None and roc_auc_score is not None:
         y_true = np.array([1 if r["label"] == "positive" else 0 for r in labelled_records])
-        # v1 uses confidence; v2 uses continuous raw_score (anomaly score)
         if args.model == "v1":
             y_score = np.array([r["confidence"] for r in labelled_records])
         else:
@@ -447,25 +495,34 @@ def run_evaluation():
             "Ticks",
             "Det. (Anom)",
             "1st Anom (s)",
+            "1st Pkt (s)",
             "Det. (>=Susp)",
             "1st Susp (s)",
             "Anom Share",
             "Max Conf",
         ]
+        if args.model == "v3":
+            attack_headers.append("Triggers (G/IF/B)")
+
         attack_rows = []
         for a in attack_results:
-            attack_rows.append([
+            row = [
                 a["label"],
                 a["src_ip"],
                 f"{a['duration_s']:.1f}s",
                 str(a["scored_ticks"]),
                 "YES" if a["detected_anomalous"] else "NO",
                 f"{a['time_to_first_anomalous_s']:.1f}s" if a["time_to_first_anomalous_s"] is not None else "n/a",
+                f"{a['time_to_first_anomalous_from_packet_s']:.1f}s" if a["time_to_first_anomalous_from_packet_s"] is not None else "n/a",
                 "YES" if a["detected_suspicious"] else "NO",
                 f"{a['time_to_first_suspicious_s']:.1f}s" if a["time_to_first_suspicious_s"] is not None else "n/a",
                 f"{a['anomalous_tick_share'] * 100:.1f}%",
                 f"{a['max_confidence']:.4f}",
-            ])
+            ]
+            if args.model == "v3":
+                row.append(f"{a['guard_triggers']}/{a['iforest_triggers']}/{a['both_triggers']}")
+            attack_rows.append(row)
+
         print(format_table(attack_headers, attack_rows))
         print()
 
@@ -481,9 +538,12 @@ def run_evaluation():
         "Ep/Hour",
         "Max Conf",
     ]
+    if args.model == "v3":
+        benign_headers.append("Triggers (G/IF/B)")
+
     benign_rows = []
     for b in benign_results:
-        benign_rows.append([
+        row = [
             b["label"],
             b["src_ip"],
             str(b["scored_ticks"]),
@@ -492,7 +552,11 @@ def run_evaluation():
             str(b["alert_episodes_anomalous"]),
             f"{b['episodes_per_hour']:.2f}",
             f"{b['max_confidence']:.4f}",
-        ])
+        ]
+        if args.model == "v3":
+            row.append(f"{b['guard_triggers']}/{b['iforest_triggers']}/{b['both_triggers']}")
+        benign_rows.append(row)
+
     print(format_table(benign_headers, benign_rows))
     print()
 

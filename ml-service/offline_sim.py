@@ -5,7 +5,7 @@ and minimum event thresholding.
 """
 
 import collections
-from typing import Any, Dict, Generator, Iterable, List, Set, Tuple
+from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Set, Tuple
 from window_logic import WindowAdmitter
 
 
@@ -15,6 +15,7 @@ def simulate_windows(
     tick_interval: float = 1.0,
     window_s: float = 5.0,
     min_events: int = 3,
+    on_admitted_event: Optional[Callable[[float, str, Dict[str, Any]], None]] = None,
 ) -> Generator[Tuple[float, str, List[Dict[str, Any]]], None, None]:
     """
     Simulates real-time sliding windows over an event stream:
@@ -23,6 +24,8 @@ def simulate_windows(
     - Prunes events older than `current_tick - window_s`.
     - Yields (current_tick, src_ip, list_of_event_dicts) for each source IP
       with at least `min_events` events in its active window.
+    - Optional callback `on_admitted_event(ts, src_ip, event)` is called for each
+      event admitted by WindowAdmitter.
     """
     if not isinstance(events, list):
         events_list = list(events)
@@ -58,6 +61,8 @@ def simulate_windows(
             ts, event = normalized_events[event_idx]
             src_ip = admitter.admit(event, ts)
             if src_ip:
+                if on_admitted_event is not None:
+                    on_admitted_event(ts, src_ip, event)
                 ip_windows[src_ip].append((ts, event))
             event_idx += 1
 
@@ -83,4 +88,3 @@ def simulate_windows(
             yield (current_tick, src_ip, event_dicts)
 
         current_tick += tick_interval
-

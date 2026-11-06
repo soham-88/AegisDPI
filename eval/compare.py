@@ -82,11 +82,14 @@ def compare_reports(before_path: str, after_path: str):
         print("--- PER-ATTACK DETECTION & LATENCY ---")
         att_headers = [
             "Attack Label",
-            "Det (Before)",
-            "Det (After)",
-            "1st Anom (Before)",
-            "1st Anom (After)",
-            "Delta Latency",
+            "Det (B)",
+            "Det (A)",
+            "1st Anom (B)",
+            "1st Anom (A)",
+            "Delta Lat",
+            "1st Pkt (B)",
+            "1st Pkt (A)",
+            "Delta Pkt Lat",
         ]
         att_rows = []
         for lbl in all_attack_labels:
@@ -98,12 +101,28 @@ def compare_reports(before_path: str, after_path: str):
 
             t_b = ab.get("time_to_first_anomalous_s")
             t_a = aa.get("time_to_first_anomalous_s")
-
             t_b_str = f"{t_b:.1f}s" if t_b is not None else "n/a"
             t_a_str = f"{t_a:.1f}s" if t_a is not None else "n/a"
             d_t_str = fmt_delta(t_b, t_a, decimals=1, suffix="s")
 
-            att_rows.append([lbl, det_b, det_a, t_b_str, t_a_str, d_t_str])
+            # Packet latency (if available in either report)
+            pkt_b = ab.get("time_to_first_anomalous_from_packet_s")
+            pkt_a = aa.get("time_to_first_anomalous_from_packet_s")
+            pkt_b_str = f"{pkt_b:.1f}s" if pkt_b is not None else "n/a"
+            pkt_a_str = f"{pkt_a:.1f}s" if pkt_a is not None else "n/a"
+            d_pkt_str = fmt_delta(pkt_b, pkt_a, decimals=1, suffix="s")
+
+            att_rows.append([
+                lbl,
+                det_b,
+                det_a,
+                t_b_str,
+                t_a_str,
+                d_t_str,
+                pkt_b_str,
+                pkt_a_str,
+                d_pkt_str,
+            ])
 
         print(format_table(att_headers, att_rows))
         print()
@@ -171,7 +190,6 @@ def compare_reports(before_path: str, after_path: str):
     metrics_rows = []
 
     for key, name in op_points:
-        # Check if keys are named anomalous_threshold or anomalous_threshold_0.85
         mb_sub = m_b.get(key) or m_b.get(f"{key}_0.85") or m_b.get(f"{key}_0.60") or {}
         ma_sub = m_a.get(key) or m_a.get(f"{key}_0.85") or m_a.get(f"{key}_0.60") or {}
 
@@ -225,4 +243,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     compare_reports(args.before, args.after)
-
