@@ -118,6 +118,16 @@ export interface AnomalyAlert {
   features: FeatureContribution[];
   is_simulated?: boolean;
   telegram_alert?: "sent" | "suppressed_cooldown" | "failed" | "disabled" | "attempted" | "not_applicable" | string;
+  model_version?: string;
+  trigger?: "guard" | "iforest" | "both" | string;
+  guard?: Array<{
+    feature: string;
+    human_name: string;
+    raw_value: number;
+    normal_max: number;
+    limit: number;
+    ratio: number;
+  }>;
 }
 
 export type NavSection =
@@ -131,9 +141,10 @@ export type NavSection =
 export interface MlStatusResponse {
   online: boolean;
   model_loaded?: boolean;
+  model_version?: string;
   model_type?: string;
   n_estimators?: number;
-  contamination?: number;
+  contamination?: number | string;
   training_sample_count?: number | null;
   trained_at?: string;
   feature_schema?: string[];

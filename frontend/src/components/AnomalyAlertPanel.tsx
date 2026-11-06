@@ -186,8 +186,16 @@ export const AnomalyAlertPanel: React.FC = () => {
                               REAL
                             </span>
                           )}
+                          {anom.trigger && (
+                            <span className="text-[9px] font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 px-1.5 py-0.5 rounded uppercase whitespace-nowrap">
+                              {anom.trigger.toUpperCase()}
+                            </span>
+                          )}
                         </div>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#ff5a2b]/20 text-[#ff5a2b] border border-[#ff5a2b]/40 whitespace-nowrap shrink-0">
+                        <span
+                          title={anom.model_version === "v3" ? "percentile vs normal traffic windows" : undefined}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#ff5a2b]/20 text-[#ff5a2b] border border-[#ff5a2b]/40 whitespace-nowrap shrink-0 cursor-default"
+                        >
                           {(anom.confidence * 100).toFixed(1)}% confidence
                         </span>
                       </div>
@@ -205,6 +213,11 @@ export const AnomalyAlertPanel: React.FC = () => {
                         <div>
                           Detected <span className="text-[#a9b6da] font-mono whitespace-nowrap">{formatDateTime(anom.timestamp)}</span>
                         </div>
+                        {anom.model_version && (
+                          <div>
+                            Model <span className="text-[#a9b6da] font-mono whitespace-nowrap uppercase">{anom.model_version}</span>
+                          </div>
+                        )}
                         <div>
                           {renderTelegramChip(anom.telegram_alert)}
                         </div>
@@ -229,6 +242,16 @@ export const AnomalyAlertPanel: React.FC = () => {
                   <span>
                     Explaining: <span className="whitespace-nowrap font-bold text-[#eef1f8]">{displayAnomaly.source_ip}</span> · <span className="whitespace-nowrap text-[#a9b6da]">{formatDateTime(displayAnomaly.timestamp)}</span>
                   </span>
+                  {displayAnomaly.model_version && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-[#0c142e] border-[#22305e] text-[#8b9ac6] uppercase">
+                      Model {displayAnomaly.model_version}
+                    </span>
+                  )}
+                  {displayAnomaly.trigger && (
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border bg-purple-500/20 text-purple-300 border-purple-500/30 uppercase">
+                      {displayAnomaly.trigger}
+                    </span>
+                  )}
                 </div>
               )}
               <p className="text-xs text-[#8b9ac6] mt-1 font-sans">

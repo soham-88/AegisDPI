@@ -19,7 +19,7 @@ from collections import defaultdict, deque, Counter, OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, Union
 
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
@@ -28,6 +28,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from model import AnomalyModel, aggregate_features, FEATURE_NAMES
+from features_v2 import FEATURE_NAMES_V2, extract_features_v2
+from model_v3 import AnomalyModelV3
 from middleware_client import MiddlewareClient
 from telegram_client import send_telegram_alert
 from window_logic import WindowAdmitter, is_non_unicast
@@ -39,6 +41,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [ML-
 logger = logging.getLogger("ml-service")
 MODEL_PATH = os.path.join(BASE_DIR, "model.joblib")
 BASELINES_PATH = os.path.join(BASE_DIR, "baselines.json")
+MODEL_V3_DIR = os.path.join(BASE_DIR, "models", "v3")
+
+ML_MODEL_VERSION = os.getenv("ML_MODEL_VERSION", "v3").strip().lower()
+if ML_MODEL_VERSION not in ("v1", "v3"):
+    logger.error("Invalid ML_MODEL_VERSION: '%s'. Must be 'v1' or 'v3'.", ML_MODEL_VERSION)
+    sys.exit(1)
+
 REDIS_URL = os.getenv("REDIS_URL")
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL is not set. Copy ml-service/.env.example to ml-service/.env and fill it in.")
@@ -89,7 +98,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Global instances
-model = AnomalyModel(MODEL_PATH, BASELINES_PATH)
+if ML_MODEL_VERSION == "v3":
+    model = AnomalyModelV3(MODEL_V3_DIR)
+else:
+    model = AnomalyModel(MODEL_PATH, BASELINES_PATH)
 middleware_client = MiddlewareClient()
 
 # In-memory sliding window state: source_ip -> deque of (timestamp, event_dict)
@@ -228,10 +240,14 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
                 events = [item[1] for item in window]
 
                 # Aggregate features
-                features = aggregate_features(events, window_seconds=5.0)
+                if ML_MODEL_VERSION == "v3":
+                    features = extract_features_v2(events, window_s=5.0)
+                else:
+                    features = aggregate_features(events, window_seconds=5.0)
 
                 # Score with ML model
                 raw_score, confidence, verdict, feature_contributions, description = model.score(features)
+                trigger = getattr(model, "last_trigger", None)
 
                 # Only emit if classified as ANOMALOUS or SUSPICIOUS
                 if verdict in ("ANOMALOUS", "SUSPICIOUS"):
@@ -241,6 +257,19 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
                     dst_ips = [e.get("dst_ip") for e in events if e.get("dst_ip")]
                     dest_ip = Counter(dst_ips).most_common(1)[0][0] if dst_ips else "0.0.0.0"
 
+                    if ML_MODEL_VERSION == "v3":
+                        trig_str = trigger if trigger else "unknown"
+                        alert_description = f"ML v3 ({trig_str}): {description}"
+                        block_reason = alert_description
+                    else:
+                        top_feat = feature_contributions[0] if feature_contributions else {}
+                        feat_human = top_feat.get("name", "traffic").replace("_", " ")
+                        top_val = top_feat.get("value", 0.0)
+                        top_base = top_feat.get("baseline", 0.0)
+                        conf_pct = round(confidence * 100, 1)
+                        block_reason = f"Volumetric flood: {feat_human} {top_val} vs {top_base} ({conf_pct}% confidence)"
+                        alert_description = description
+
                     if verdict == "SUSPICIOUS":
                         logger.info("SUSPICIOUS verdict evaluated (dashboard push suppressed): IP: %s -> %s (conf: %.2f)",
                                     src_ip, dest_ip, confidence)
@@ -249,13 +278,6 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
                     if verdict == "ANOMALOUS":
                         # 5. Safety switch: check ML_AUTO_MITIGATE before calling POST /api/rules
                         if ML_AUTO_MITIGATE:
-                            top_feat = feature_contributions[0] if feature_contributions else {}
-                            feat_human = top_feat.get("name", "traffic").replace("_", " ")
-                            top_val = top_feat.get("value", 0.0)
-                            top_base = top_feat.get("baseline", 0.0)
-                            conf_pct = round(confidence * 100, 1)
-                            block_reason = f"Volumetric flood: {feat_human} {top_val} vs {top_base} ({conf_pct}% confidence)"
-
                             logger.info("Triggering auto-mitigation block for IP: %s (reason: %s)", src_ip, block_reason)
                             try:
                                 success = await asyncio.to_thread(middleware_client.post_rule, src_ip, block_reason)
@@ -275,8 +297,9 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
                                 src_ip,
                                 dest_ip,
                                 confidence,
-                                description,
+                                alert_description,
                                 auto_mitigated,
+                                trigger=trigger,
                             )
                             if telegram_status == "sent":
                                 last_alert_time[src_ip] = now
@@ -291,6 +314,16 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
                         telegram_status = "not_applicable"
 
                     if verdict == "ANOMALOUS":
+                        clean_features = [
+                            f for f in feature_contributions
+                            if isinstance(f, dict) and f.get("name") != "guard" and "contribution_pct" in f
+                        ]
+                        guard_entries_list = []
+                        for f in feature_contributions:
+                            if isinstance(f, dict) and f.get("name") == "guard":
+                                guard_entries_list = f.get("guard", [])
+                                break
+
                         # Construct exact AnomalyAlert payload matching frontend / Redis contract
                         verdict_payload = {
                             "id": f"anom_{uuid.uuid4().hex[:12]}",
@@ -300,9 +333,12 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
                             "confidence": float(round(confidence, 4)),
                             "verdict": verdict,
                             "auto_mitigated": auto_mitigated,
-                            "description": description,
-                            "features": feature_contributions,
+                            "description": alert_description,
+                            "features": clean_features,
                             "telegram_alert": telegram_status,
+                            "model_version": ML_MODEL_VERSION,
+                            "trigger": trigger,
+                            "guard": guard_entries_list,
                         }
 
                         # Publish verdict to Redis channel 'ml:verdicts'
@@ -333,14 +369,18 @@ async def lifespan(app: FastAPI):
     # 1. Verify and load model artifacts
     try:
         model.load()
-        logger.info("Successfully loaded ML model from: %s", MODEL_PATH)
-        logger.info("Loaded feature baselines: %s", model.baselines)
+        if ML_MODEL_VERSION == "v3":
+            logger.info("Active ML model: v3 (IsolationForest + envelope guard)")
+            logger.info("Successfully loaded v3 model from: %s", MODEL_V3_DIR)
+        else:
+            logger.info("Active ML model: v1 (volumetric IsolationForest)")
+            logger.info("Successfully loaded ML model from: %s", MODEL_PATH)
+            logger.info("Loaded feature baselines: %s", model.baselines)
     except FileNotFoundError as e:
-        logger.error("Missing model artifact: %s", e)
-        logger.error("Please run 'python train_model.py' first to generate model.joblib and baselines.json!")
+        logger.error("Missing model artifact for %s: %s", ML_MODEL_VERSION, e)
         sys.exit(1)
     except Exception as e:
-        logger.error("Failed to load ML model: %s", e)
+        logger.error("Failed to load ML model (%s): %s", ML_MODEL_VERSION, e)
         sys.exit(1)
 
     # Refresh host interface IPv4 addresses
@@ -417,12 +457,16 @@ class PredictResponse(BaseModel):
     verdict: Optional[str]
     description: str
     features: list
+    model_version: Optional[str] = None
+    trigger: Optional[str] = None
+    guard: Optional[list] = None
 
 class ModelStatusResponse(BaseModel):
     model_loaded: bool
+    model_version: str = "v1"
     model_type: str
     n_estimators: int
-    contamination: float
+    contamination: Union[float, str]
     training_sample_count: Optional[int]
     trained_at: str
     feature_schema: list[str]
@@ -443,28 +487,50 @@ def get_model_status():
     if not model.is_loaded():
         raise HTTPException(status_code=503, detail="Model is not loaded.")
 
-    try:
-        mtime = os.path.getmtime(MODEL_PATH)
-        trained_at_file = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
-    except Exception:
-        trained_at_file = "unknown"
+    if ML_MODEL_VERSION == "v3":
+        m = model.base_model.model
+        model_type = "IsolationForest + EnvelopeGuard"
+        n_estimators = int(m.n_estimators)
+        try:
+            contamination = float(m.contamination)
+        except (ValueError, TypeError):
+            contamination = str(m.contamination)
+        training_sample_count = model.meta.get("train_vectors_count")
+        trained_at = model.meta.get("timestamp", "unknown")
+        feature_schema = FEATURE_NAMES_V2
+        baselines = {
+            k: float(v.get("median", 0.0))
+            for k, v in model.base_model.feature_stats.items()
+        }
+    else:
+        try:
+            mtime = os.path.getmtime(MODEL_PATH)
+            trained_at_file = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        except Exception:
+            trained_at_file = "unknown"
 
-    m = model.model
-    model_type = type(m).__name__
-    n_estimators = int(m.n_estimators)
-    contamination = float(m.contamination)
-    training_sample_count = model.meta.get("n_training_samples")
-    trained_at = model.meta.get("trained_at", trained_at_file)
+        m = model.model
+        model_type = type(m).__name__
+        n_estimators = int(m.n_estimators)
+        try:
+            contamination = float(m.contamination)
+        except (ValueError, TypeError):
+            contamination = str(m.contamination)
+        training_sample_count = model.meta.get("n_training_samples")
+        trained_at = model.meta.get("trained_at", trained_at_file)
+        feature_schema = FEATURE_NAMES
+        baselines = model.baselines
 
     return ModelStatusResponse(
         model_loaded=model.is_loaded(),
+        model_version=ML_MODEL_VERSION,
         model_type=model_type,
         n_estimators=n_estimators,
         contamination=contamination,
         training_sample_count=training_sample_count,
         trained_at=trained_at,
-        feature_schema=FEATURE_NAMES,
-        baselines=model.baselines,
+        feature_schema=feature_schema,
+        baselines=baselines,
         auto_mitigate=ML_AUTO_MITIGATE,
         alert_cooldown_s=ML_ALERT_COOLDOWN_S,
         num_local_ips=len(ML_IGNORE_IPS),
@@ -484,7 +550,18 @@ def predict_features(req: PredictRequest):
 
     try:
         raw_score, confidence, verdict, feature_contributions, description = model.score(req.features)
-        is_anomaly = bool(confidence >= 0.85)
+        trigger = getattr(model, "last_trigger", None)
+        is_anomaly = bool(verdict == "ANOMALOUS")
+
+        clean_features = [
+            f for f in feature_contributions
+            if isinstance(f, dict) and f.get("name") != "guard" and "contribution_pct" in f
+        ]
+        guard_entries = []
+        for f in feature_contributions:
+            if isinstance(f, dict) and f.get("name") == "guard":
+                guard_entries = f.get("guard", [])
+                break
 
         return PredictResponse(
             source_ip=req.source_ip,
@@ -492,7 +569,10 @@ def predict_features(req: PredictRequest):
             confidence=float(round(confidence, 4)),
             verdict=verdict,
             description=description,
-            features=feature_contributions,
+            features=clean_features,
+            model_version=ML_MODEL_VERSION,
+            trigger=trigger,
+            guard=guard_entries,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

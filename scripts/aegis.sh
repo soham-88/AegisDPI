@@ -44,15 +44,7 @@ wait_for_port() {
     done
 }
 
-start_services() {
-    # 1. Redis (6379)
-    if is_port_open 6379; then
-        echo "Redis: port 6379 already open, skipping start"
-    else
-        redis-server --requirepass "${REDIS_PW}" --bind 127.0.0.1 --daemonize yes --dir "${REPO_ROOT}"
-    fi
-
-    # 2. ML Service (8000)
+start_ml() {
     if is_port_open 8000; then
         echo "ML: port 8000 already open, skipping start"
     else
@@ -65,6 +57,49 @@ start_services() {
         echo $! > "${RUN_DIR}/ml.pid"
         popd > /dev/null
     fi
+}
+
+stop_ml() {
+    if [ -f "${RUN_DIR}/ml.pid" ]; then
+        local ml_pid
+        ml_pid=$(cat "${RUN_DIR}/ml.pid" 2>/dev/null || true)
+        if [ -n "${ml_pid}" ] && kill -0 "${ml_pid}" 2>/dev/null; then
+            kill -TERM "${ml_pid}" 2>/dev/null || true
+            for _ in $(seq 1 10); do
+                if ! kill -0 "${ml_pid}" 2>/dev/null; then break; fi
+                sleep 0.5
+            done
+        fi
+        rm -f "${RUN_DIR}/ml.pid"
+    fi
+    # Fallback if ML was started outside script
+    if is_port_open 8000; then
+        pkill -TERM -f "uvicorn main:app" 2>/dev/null || true
+        for _ in $(seq 1 8); do
+            if ! is_port_open 8000; then break; fi
+            sleep 0.5
+        done
+    fi
+}
+
+restart_ml() {
+    echo "Stopping ML service..."
+    stop_ml
+    echo "Starting ML service..."
+    start_ml
+    wait_for_port "ML" 8000
+}
+
+start_services() {
+    # 1. Redis (6379)
+    if is_port_open 6379; then
+        echo "Redis: port 6379 already open, skipping start"
+    else
+        redis-server --requirepass "${REDIS_PW}" --bind 127.0.0.1 --daemonize yes --dir "${REPO_ROOT}"
+    fi
+
+    # 2. ML Service (8000)
+    start_ml
 
     # 3. Middleware (4000)
     if is_port_open 4000; then
@@ -113,27 +148,8 @@ stop_services() {
         done
     fi
 
-    # 2. Stop ML via PID file
-    if [ -f "${RUN_DIR}/ml.pid" ]; then
-        local ml_pid
-        ml_pid=$(cat "${RUN_DIR}/ml.pid" 2>/dev/null || true)
-        if [ -n "${ml_pid}" ] && kill -0 "${ml_pid}" 2>/dev/null; then
-            kill -TERM "${ml_pid}" 2>/dev/null || true
-            for _ in $(seq 1 10); do
-                if ! kill -0 "${ml_pid}" 2>/dev/null; then break; fi
-                sleep 0.5
-            done
-        fi
-        rm -f "${RUN_DIR}/ml.pid"
-    fi
-    # Fallback if ML was started outside script
-    if is_port_open 8000; then
-        pkill -TERM -f "uvicorn main:app" 2>/dev/null || true
-        for _ in $(seq 1 8); do
-            if ! is_port_open 8000; then break; fi
-            sleep 0.5
-        done
-    fi
+    # 2. Stop ML
+    stop_ml
 
     # 3. Stop Redis
     redis-cli -a "${REDIS_PW}" --no-auth-warning shutdown 2>/dev/null || redis-cli shutdown 2>/dev/null || true
@@ -233,12 +249,15 @@ case "${1:-}" in
     status)
         status_services
         ;;
+    restart-ml)
+        restart_ml
+        ;;
     logs)
         shift
         logs_service "${1:-}"
         ;;
     *)
-        echo "Usage: $0 {start|stop|status|logs <svc>}"
+        echo "Usage: $0 {start|stop|status|restart-ml|logs <svc>}"
         exit 1
         ;;
 esac

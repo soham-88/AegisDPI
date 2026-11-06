@@ -16,6 +16,7 @@ def send_telegram_alert(
     confidence: float,
     description: str,
     auto_mitigated: bool,
+    trigger: str = None,
 ) -> str:
     """
     Sends an anomaly alert message to configured Telegram chat.
@@ -36,11 +37,13 @@ def send_telegram_alert(
         else "Failed or Disabled"
     )
     conf_pct = f"{confidence * 100:.1f}%"
+    trigger_line = f"• *Trigger:* `{trigger.upper()}`\n" if trigger else ""
 
     message = (
         "🚨 *AEGIS DPI — ANOMALY DETECTED*\n\n"
         f"• *Source IP:* `{source_ip}`\n"
         f"• *Target IP:* `{dest_ip}`\n"
+        f"{trigger_line}"
         f"• *Confidence:* *{conf_pct}*\n"
         f"• *Auto-Mitigation:* {mitigation_text}\n\n"
         f"📋 *Summary:*\n{description}\n"

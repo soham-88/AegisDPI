@@ -49,6 +49,9 @@ function normalizeAnomaly(item: any): AnomalyAlert {
       : [],
     is_simulated: Boolean(item.is_simulated),
     telegram_alert: item.telegram_alert,
+    model_version: item.model_version ? String(item.model_version) : undefined,
+    trigger: item.trigger ? String(item.trigger) : undefined,
+    guard: Array.isArray(item.guard) ? item.guard : undefined,
   };
 }
 
