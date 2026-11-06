@@ -1,0 +1,80 @@
+{
+  "header": {
+    "label": "baseline-isoforest",
+    "dataset": "benign-train",
+    "git_commit": "7b64604",
+    "events_count": 377731,
+    "scored_ticks_count": 3156,
+    "unlabelled_ticks_count": 0,
+    "tick_interval_s": 1.0,
+    "local_ips": [
+      "10.10.0.1",
+      "10.255.255.254"
+    ],
+    "grace_s": 5.0
+  },
+  "blocking_simulation": "Blocking is NOT simulated (no IP is removed after an ANOMALOUS verdict).",
+  "attacks": [],
+  "benign": [
+    {
+      "label": "benign_browser",
+      "src_ip": "10.10.0.3",
+      "duration_s": 1800.016461133957,
+      "scored_ticks": 1679,
+      "anomalous_ticks": 0,
+      "suspicious_ticks": 104,
+      "alert_episodes_anomalous": 0,
+      "episodes_per_hour": 0.0,
+      "max_confidence": 0.7916810017247998,
+      "highest_confidence_features": {
+        "packets_per_second": 31.6,
+        "unique_dst_ports": 3.0,
+        "unique_dst_ips": 1.0,
+        "dropped_ratio": 0.0,
+        "protocol_diversity": 2.0
+      }
+    },
+    {
+      "label": "benign_heavy_user",
+      "src_ip": "10.10.0.4",
+      "duration_s": 1800.016461133957,
+      "scored_ticks": 1477,
+      "anomalous_ticks": 11,
+      "suspicious_ticks": 135,
+      "alert_episodes_anomalous": 3,
+      "episodes_per_hour": 5.999945130055267,
+      "max_confidence": 0.9247967948086896,
+      "highest_confidence_features": {
+        "packets_per_second": 346.8,
+        "unique_dst_ports": 1.0,
+        "unique_dst_ips": 1.0,
+        "dropped_ratio": 0.0,
+        "protocol_diversity": 1.0
+      }
+    }
+  ],
+  "overall_metrics": {
+    "anomalous_threshold_0.85": {
+      "tp": 0,
+      "fp": 11,
+      "fn": 0,
+      "tn": 3145,
+      "precision": 0.0,
+      "recall": null,
+      "f1": null,
+      "fpr": 0.003485424588086185
+    },
+    "suspicious_threshold_0.60": {
+      "tp": 0,
+      "fp": 250,
+      "fn": 0,
+      "tn": 2906,
+      "precision": 0.0,
+      "recall": null,
+      "f1": null,
+      "fpr": 0.07921419518377694
+    },
+    "roc_auc": null,
+    "pr_auc": null
+  }
+}

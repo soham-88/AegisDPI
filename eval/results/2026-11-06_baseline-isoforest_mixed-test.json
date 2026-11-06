@@ -1,0 +1,165 @@
+{
+  "header": {
+    "label": "baseline-isoforest",
+    "dataset": "mixed-test",
+    "git_commit": "7b64604",
+    "events_count": 668419,
+    "scored_ticks_count": 1195,
+    "unlabelled_ticks_count": 0,
+    "tick_interval_s": 1.0,
+    "local_ips": [
+      "10.10.0.1",
+      "10.255.255.254"
+    ],
+    "grace_s": 5.0
+  },
+  "blocking_simulation": "Blocking is NOT simulated (no IP is removed after an ANOMALOUS verdict).",
+  "attacks": [
+    {
+      "label": "icmp_flood_high",
+      "src_ip": "10.10.0.2",
+      "duration_s": 30.222963094711304,
+      "scored_ticks": 35,
+      "detected_anomalous": true,
+      "time_to_first_anomalous_s": 1.042543888092041,
+      "detected_suspicious": true,
+      "time_to_first_suspicious_s": 1.042543888092041,
+      "anomalous_tick_share": 0.9714285714285714,
+      "max_confidence": 0.9738808407451112
+    },
+    {
+      "label": "syn_flood_high",
+      "src_ip": "10.10.0.2",
+      "duration_s": 30.206219911575317,
+      "scored_ticks": 35,
+      "detected_anomalous": true,
+      "time_to_first_anomalous_s": 0.779714822769165,
+      "detected_suspicious": true,
+      "time_to_first_suspicious_s": 0.779714822769165,
+      "anomalous_tick_share": 1.0,
+      "max_confidence": 0.9796633500790334
+    },
+    {
+      "label": "udp_flood_high",
+      "src_ip": "10.10.0.2",
+      "duration_s": 30.224831104278564,
+      "scored_ticks": 35,
+      "detected_anomalous": true,
+      "time_to_first_anomalous_s": 1.519995927810669,
+      "detected_suspicious": true,
+      "time_to_first_suspicious_s": 0.519995927810669,
+      "anomalous_tick_share": 0.9714285714285714,
+      "max_confidence": 0.9796633500790334
+    },
+    {
+      "label": "port_scan_fast",
+      "src_ip": "10.10.0.5",
+      "duration_s": 4.778795957565308,
+      "scored_ticks": 9,
+      "detected_anomalous": true,
+      "time_to_first_anomalous_s": 5.218658924102783,
+      "detected_suspicious": true,
+      "time_to_first_suspicious_s": 1.2186589241027832,
+      "anomalous_tick_share": 0.5555555555555556,
+      "max_confidence": 0.987068688153507
+    },
+    {
+      "label": "syn_flood_low",
+      "src_ip": "10.10.0.6",
+      "duration_s": 30.217963933944702,
+      "scored_ticks": 35,
+      "detected_anomalous": true,
+      "time_to_first_anomalous_s": 3.386375904083252,
+      "detected_suspicious": true,
+      "time_to_first_suspicious_s": 2.386375904083252,
+      "anomalous_tick_share": 0.8857142857142857,
+      "max_confidence": 0.9796633500790334
+    },
+    {
+      "label": "icmp_flood_low",
+      "src_ip": "10.10.0.6",
+      "duration_s": 30.206846952438354,
+      "scored_ticks": 35,
+      "detected_anomalous": false,
+      "time_to_first_anomalous_s": null,
+      "detected_suspicious": true,
+      "time_to_first_suspicious_s": 6.127710819244385,
+      "anomalous_tick_share": 0.0,
+      "max_confidence": 0.7375980653087204
+    },
+    {
+      "label": "port_scan_slow",
+      "src_ip": "10.10.0.5",
+      "duration_s": 45.18362617492676,
+      "scored_ticks": 48,
+      "detected_anomalous": true,
+      "time_to_first_anomalous_s": 9.879029989242554,
+      "detected_suspicious": true,
+      "time_to_first_suspicious_s": 1.8790299892425537,
+      "anomalous_tick_share": 0.125,
+      "max_confidence": 0.8768822618557738
+    }
+  ],
+  "benign": [
+    {
+      "label": "benign_browser",
+      "src_ip": "10.10.0.3",
+      "duration_s": 561.4392800331116,
+      "scored_ticks": 520,
+      "anomalous_ticks": 0,
+      "suspicious_ticks": 41,
+      "alert_episodes_anomalous": 0,
+      "episodes_per_hour": 0.0,
+      "max_confidence": 0.7749329986925472,
+      "highest_confidence_features": {
+        "packets_per_second": 25.6,
+        "unique_dst_ports": 3.0,
+        "unique_dst_ips": 1.0,
+        "dropped_ratio": 0.0,
+        "protocol_diversity": 2.0
+      }
+    },
+    {
+      "label": "benign_heavy_user",
+      "src_ip": "10.10.0.4",
+      "duration_s": 561.4392800331116,
+      "scored_ticks": 443,
+      "anomalous_ticks": 25,
+      "suspicious_ticks": 40,
+      "alert_episodes_anomalous": 5,
+      "episodes_per_hour": 32.060457185928335,
+      "max_confidence": 0.9399303200460648,
+      "highest_confidence_features": {
+        "packets_per_second": 377.4,
+        "unique_dst_ports": 2.0,
+        "unique_dst_ips": 1.0,
+        "dropped_ratio": 0.0,
+        "protocol_diversity": 1.0
+      }
+    }
+  ],
+  "overall_metrics": {
+    "anomalous_threshold_0.85": {
+      "tp": 145,
+      "fp": 25,
+      "fn": 87,
+      "tn": 938,
+      "precision": 0.8529411764705882,
+      "recall": 0.625,
+      "f1": 0.7213930348258706,
+      "fpr": 0.02596053997923157
+    },
+    "suspicious_threshold_0.60": {
+      "tp": 202,
+      "fp": 106,
+      "fn": 30,
+      "tn": 857,
+      "precision": 0.6558441558441559,
+      "recall": 0.8706896551724138,
+      "f1": 0.7481481481481483,
+      "fpr": 0.11007268951194185
+    },
+    "roc_auc": 0.9562542521574103,
+    "pr_auc": 0.8362415070726157
+  }
+}

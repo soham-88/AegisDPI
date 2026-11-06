@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from model import AnomalyModel, aggregate_features, FEATURE_NAMES
 from middleware_client import MiddlewareClient
 from telegram_client import send_telegram_alert
+from window_logic import WindowAdmitter, is_non_unicast
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Load environment configuration
@@ -64,6 +65,7 @@ def refresh_local_ips() -> bool:
 
     if new_local_ips != ML_IGNORE_IPS:
         ML_IGNORE_IPS = new_local_ips
+        window_admitter.set_local_ips(ML_IGNORE_IPS)
         logger.info("ML local IP set updated (%d IPs): %s", len(ML_IGNORE_IPS), sorted(list(ML_IGNORE_IPS)))
         return True
     return False
@@ -93,10 +95,9 @@ middleware_client = MiddlewareClient()
 # In-memory sliding window state: source_ip -> deque of (timestamp, event_dict)
 ip_event_windows: Dict[str, deque] = defaultdict(deque)
 
-# Connection tracking flow table:
-# key: (remote_ip, remote_port, local_port, protocol) or (remote_ip, protocol)
-# value: [initiator, last_seen] where initiator in {"local", "remote"}
-flow_table: OrderedDict = OrderedDict()
+# Sliding window admission logic & connection tracking flow table:
+window_admitter = WindowAdmitter(ML_IGNORE_IPS, FLOW_TABLE_TTL_S, MAX_FLOW_ENTRIES)
+flow_table: OrderedDict = window_admitter.flow_table
 
 # Debounce tracking: source_ip -> last verdict timestamp
 last_verdict_time: Dict[str, float] = {}
@@ -109,22 +110,6 @@ current_blocked_ips: set = set()
 
 # Background task handles
 bg_tasks = []
-
-
-@lru_cache(maxsize=8192)
-def is_non_unicast(ip_str: str) -> bool:
-    if not ip_str or ip_str == "255.255.255.255":
-        return True
-    try:
-        ip = ipaddress.ip_address(ip_str)
-        return (
-            ip.is_multicast
-            or ip.is_link_local
-            or ip.is_unspecified
-            or ip_str == "255.255.255.255"
-        )
-    except ValueError:
-        return True
 
 
 async def log_stream_consumer(redis_client: aioredis.Redis):
@@ -153,135 +138,17 @@ async def log_stream_consumer(redis_client: aioredis.Redis):
                         if data.get("init") == "1":
                             continue
 
-                        src_ip = data.get("src_ip", "")
-                        dst_ip = data.get("dst_ip", "")
-                        if not src_ip:
-                            continue
-
-                        # 3. Skip non-unicast traffic (multicast, broadcast, link-local, unspecified)
-                        if is_non_unicast(src_ip) or is_non_unicast(dst_ip):
-                            continue
-
-                        src_is_local = src_ip in ML_IGNORE_IPS
-                        dst_is_local = dst_ip in ML_IGNORE_IPS
-
-                        # Local-to-local traffic never feeds any window
-                        if src_is_local and dst_is_local:
-                            continue
-
-                        src_port = int(data.get("src_port") or 0)
-                        dst_port = int(data.get("dst_port") or 0)
-                        protocol = str(data.get("protocol") or "")
                         now = time.time()
-
-                        # 1. Connection tracking with fixed initiator & explicit evidence
-                        if src_is_local or dst_is_local:
-                            if src_is_local:
-                                remote_ip = dst_ip
-                                remote_port = dst_port
-                                local_port = src_port
-                            else:
-                                remote_ip = src_ip
-                                remote_port = src_port
-                                local_port = dst_port
-
-                            if remote_port == 0 and local_port == 0:
-                                flow_key = (remote_ip, protocol)
-                            else:
-                                flow_key = (remote_ip, remote_port, local_port, protocol)
-
-                            # Parse optional tcp_flags and icmp_type if present
-                            raw_tcp_flags = data.get("tcp_flags")
-                            tcp_flags_val = None
-                            if raw_tcp_flags is not None and str(raw_tcp_flags).strip() != "":
-                                try:
-                                    tcp_flags_val = int(raw_tcp_flags)
-                                except ValueError:
-                                    pass
-
-                            raw_icmp_type = data.get("icmp_type")
-                            icmp_type_val = None
-                            if raw_icmp_type is not None and str(raw_icmp_type).strip() != "":
-                                try:
-                                    icmp_type_val = int(raw_icmp_type)
-                                except ValueError:
-                                    pass
-
-                            is_icmp = protocol.upper() in ("1", "ICMP") or (icmp_type_val is not None and icmp_type_val >= 0)
-                            is_tcp = protocol.upper() in ("6", "TCP") or (tcp_flags_val is not None and tcp_flags_val > 0)
-
-                            candidate_initiator = None
-                            is_explicit = False
-
-                            if is_icmp and icmp_type_val is not None and icmp_type_val >= 0:
-                                # ICMP: echo/timestamp/info REQUEST types (8, 13, 15) -> initiator = sender
-                                if icmp_type_val in (8, 13, 15):
-                                    candidate_initiator = "local" if src_is_local else "remote"
-                                    is_explicit = True
-                                # Their REPLY types (0, 14, 16) -> initiator = receiver
-                                elif icmp_type_val in (0, 14, 16):
-                                    candidate_initiator = "local" if dst_is_local else "remote"
-                                    is_explicit = True
-                                else:
-                                    # Error types (3, 11, others) never create a remote-initiated flow
-                                    candidate_initiator = "local"
-                                    is_explicit = False
-                            elif is_tcp and tcp_flags_val is not None:
-                                is_syn = (tcp_flags_val & 0x02) != 0
-                                is_ack = (tcp_flags_val & 0x10) != 0
-                                if is_syn and not is_ack:
-                                    # SYN without ACK -> initiator = sender
-                                    candidate_initiator = "local" if src_is_local else "remote"
-                                    is_explicit = True
-                                elif is_syn and is_ack:
-                                    # SYN+ACK -> initiator = receiver
-                                    candidate_initiator = "local" if dst_is_local else "remote"
-                                    is_explicit = True
-                                else:
-                                    # Other packets: existing first-seen rule
-                                    candidate_initiator = "local" if src_is_local else "remote"
-                                    is_explicit = False
-                            else:
-                                # UDP, other protocols, or older log entries without new fields: existing first-seen rule
-                                candidate_initiator = "local" if src_is_local else "remote"
-                                is_explicit = False
-
-                            entry = flow_table.get(flow_key)
-                            if entry is None:
-                                flow_table[flow_key] = [candidate_initiator, now, is_explicit]
-                                initiator = candidate_initiator
-                                if len(flow_table) > MAX_FLOW_ENTRIES:
-                                    flow_table.popitem(last=False)
-                            else:
-                                current_is_explicit = entry[2] if len(entry) > 2 else False
-                                if is_explicit:
-                                    # Explicit evidence (request type or SYN) OVERRIDES an earlier first-seen guess
-                                    entry[0] = candidate_initiator
-                                    if len(entry) > 2:
-                                        entry[2] = True
-                                    else:
-                                        entry.append(True)
-                                    initiator = candidate_initiator
-                                else:
-                                    # First-seen never overrides explicit evidence
-                                    initiator = entry[0]
-                                entry[1] = now
-                                flow_table.move_to_end(flow_key)
-
-                            # Local-sourced packets never feed any window
-                            if src_is_local:
-                                continue
-
-                            # Inbound packet (dst LOCAL) feeds window only if flow initiator == "remote"
-                            if initiator != "remote":
-                                continue
+                        admitted_ip = window_admitter.admit(data, now)
+                        if not admitted_ip:
+                            continue
 
                         # 2. Skip already-blocked IPs from feeding sliding window
-                        if src_ip in current_blocked_ips:
+                        if admitted_ip in current_blocked_ips:
                             continue
 
                         # Remaining inbound packets (remote-initiated) feed the window
-                        window = ip_event_windows[src_ip]
+                        window = ip_event_windows[admitted_ip]
                         window.append((now, data))
 
                         # Prune events older than 5.0 seconds for this source IP
@@ -318,13 +185,7 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
             cutoff = now - 5.0
 
             # 1. Expire flow table entries older than FLOW_TABLE_TTL_S (120 s)
-            cutoff_flow = now - FLOW_TABLE_TTL_S
-            while flow_table:
-                oldest_key, entry = next(iter(flow_table.items()))
-                if entry[1] < cutoff_flow:
-                    flow_table.popitem(last=False)
-                else:
-                    break
+            window_admitter.expire_flows(now)
 
             # 2. Skip already-blocked IPs: query blocklist:ips once per loop
             try:

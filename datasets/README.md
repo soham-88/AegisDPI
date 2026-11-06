@@ -157,3 +157,31 @@ tcpreplay -i veth_lab --topspeed datasets/<name>/capture.pcap
 
 - `benign-train` and `benign-val` were recorded with the old 10,000-event reporter queue. 0.82% and 0.96% of log events were dropped during 20 MB download bursts (verified against `capture.pcap`, which agrees with events + counted drops to within 0.2%). Both datasets are used only by replaying `capture.pcap`, so this log loss does not affect training or threshold selection. Their `summary.json` therefore shows `"valid": false`.
 - `mixed-test` was re-recorded after the reporter queue was raised to 131,072 events (`--log-queue-size`) and has zero dropped events.
+
+---
+
+## 5. Offline Evaluation
+
+The offline evaluation tool (`ml-service/evaluate_offline.py`) replays recorded `events.jsonl` against the ML detector model without running live traffic or modifying production code or model weights:
+
+```bash
+cd ml-service
+venv/bin/python evaluate_offline.py --dataset ../datasets/<name> --label <label> [--local-ips 10.10.0.1,10.255.255.254] [--grace 5]
+```
+
+### Pipeline Simulation
+- **Window Admission**: Replicates `WindowAdmitter` logic verbatim (filters local-to-local traffic, ignores local-sourced packets, maintains flow table with TTL to only admit remote-initiated flows, filters non-unicast).
+- **Evaluator Ticks**: Evaluates every 1.0 s tick (matching `anomaly_evaluator_loop`), prunes events older than 5.0 s, and scores all active IPs with $\ge 3$ events via `AnomalyModel.score()`.
+- **Ground Truth Labelling**:
+  - `POSITIVE`: Attack entry matching `src_ip` within `[start_ts, end_ts + grace]`.
+  - `BENIGN`: Benign entry matching `src_ip` within `[start_ts, end_ts]`.
+  - `UNLABELLED`: Scored ticks outside defined windows (reported in header count, excluded from classification metrics).
+- **Blocking**: Blocking is **not** simulated (no IP is removed after an `ANOMALOUS` verdict) to measure raw detector behavior across the entire dataset.
+
+### Output Metrics & Reports
+The script prints aligned terminal summary tables and exports structured JSON to `eval/results/<YYYY-MM-DD>_<label>_<dataset>.json`:
+- **Header**: Dataset name, label, git commit hash, total events, scored ticks, unlabelled ticks, tick interval, local IPs, grace period.
+- **Per-Attack Evaluation**: Duration, scored ticks, detection at `ANOMALOUS` (`conf >= 0.85`), time to first `ANOMALOUS`, detection at `SUSPICIOUS` (`conf >= 0.60`), time to first `SUSPICIOUS`, percentage of anomalous ticks, max confidence.
+- **Per-Benign Evaluation**: Scored ticks, anomalous/suspicious tick counts, alert episodes at `ANOMALOUS` (consecutive flagged ticks merged into one episode), episodes/hour, max confidence, and feature values of the highest-confidence benign tick.
+- **Overall Metrics**: Evaluated at both operating points (`conf >= 0.85` and `conf >= 0.60`) with TP, FP, FN, TN, Precision, Recall, F1-Score, False Positive Rate (FPR), ROC-AUC, and PR-AUC (Average Precision). On benign-only datasets, reports false-positive counts and FPR (single-class metrics marked `n/a`).
+
