@@ -1,0 +1,18 @@
+{
+  "duration": 900.014,
+  "total_events": 197186,
+  "events_per_src_ip": {
+    "10.10.0.1": 173107,
+    "10.10.0.4": 14191,
+    "10.10.0.3": 9886,
+    "": 2
+  },
+  "events_per_label": {
+    "benign_browser": 9886,
+    "benign_heavy_user": 14191
+  },
+  "log_dropped": 1915,
+  "log_failed": 0,
+  "pcap_file_size": 262983205,
+  "valid": false
+}

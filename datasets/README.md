@@ -152,3 +152,8 @@ The recorded `capture.pcap` contains all byte-level traffic generated across ben
 tcpreplay -i veth_lab --topspeed datasets/<name>/capture.pcap
 ```
 
+
+## Recording notes
+
+- `benign-train` and `benign-val` were recorded with the old 10,000-event reporter queue. 0.82% and 0.96% of log events were dropped during 20 MB download bursts (verified against `capture.pcap`, which agrees with events + counted drops to within 0.2%). Both datasets are used only by replaying `capture.pcap`, so this log loss does not affect training or threshold selection. Their `summary.json` therefore shows `"valid": false`.
+- `mixed-test` was re-recorded after the reporter queue was raised to 131,072 events (`--log-queue-size`) and has zero dropped events.
