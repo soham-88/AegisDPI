@@ -112,7 +112,7 @@ export const AnomalyAlertPanel: React.FC = () => {
                     Auto-mitigation: {mlStatus.auto_mitigate ? "ON" : "OFF"}
                   </span>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded border bg-[#0c142e] border-[#22305e] text-[#8b9ac6]">
-                    Cooldown: {mlStatus.alert_cooldown_s ?? 600}s
+                    Alert cooldown {mlStatus.alert_cooldown_s ?? 600}s · re-block {mlStatus.mitigation_cooldown_s ?? 10}s
                   </span>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded border bg-[#0c142e] border-[#22305e] text-[#8b9ac6]">
                     Trained on {mlStatus.training_sample_count ? mlStatus.training_sample_count.toLocaleString() : "1,000"} samples

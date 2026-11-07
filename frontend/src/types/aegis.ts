@@ -176,6 +176,7 @@ export interface MlStatusResponse {
   baselines?: Record<string, number>;
   auto_mitigate?: boolean;
   alert_cooldown_s?: number;
+  mitigation_cooldown_s?: number;
   num_local_ips?: number;
   flow_table_size?: number;
   tracked_source_ips?: number;

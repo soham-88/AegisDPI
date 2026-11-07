@@ -92,6 +92,7 @@ async def local_ip_refresh_loop():
 
 ML_AUTO_MITIGATE = os.getenv("ML_AUTO_MITIGATE", "true").strip().lower() in ("true", "1", "yes")
 ML_ALERT_COOLDOWN_S = float(os.getenv("ML_ALERT_COOLDOWN_S", "600"))
+ML_MITIGATION_COOLDOWN_S = float(os.getenv("ML_MITIGATION_COOLDOWN_S", "10"))
 FLOW_TABLE_TTL_S = float(os.getenv("FLOW_TABLE_TTL_S", "120"))
 MAX_FLOW_ENTRIES = int(os.getenv("MAX_FLOW_ENTRIES", "50000"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -113,6 +114,9 @@ flow_table: OrderedDict = window_admitter.flow_table
 
 # Debounce tracking: source_ip -> last verdict timestamp
 last_verdict_time: Dict[str, float] = {}
+
+# Mitigation cooldown tracking: source_ip -> last mitigation attempt timestamp
+mitigated_cooldowns: Dict[str, float] = {}
 
 # Alert cooldown tracking: source_ip -> last Telegram alert timestamp
 last_alert_time: Dict[str, float] = {}
@@ -276,15 +280,25 @@ async def anomaly_evaluator_loop(redis_client: aioredis.Redis):
 
                     auto_mitigated = False
                     if verdict == "ANOMALOUS":
-                        # 5. Safety switch: check ML_AUTO_MITIGATE before calling POST /api/rules
+                        # 5. Safety switch & debounce: check ML_AUTO_MITIGATE and ML_MITIGATION_COOLDOWN_S before calling POST /api/rules
                         if ML_AUTO_MITIGATE:
-                            logger.info("Triggering auto-mitigation block for IP: %s (reason: %s)", src_ip, block_reason)
-                            try:
-                                success = await asyncio.to_thread(middleware_client.post_rule, src_ip, block_reason)
-                                auto_mitigated = bool(success)
-                            except Exception as ex:
-                                logger.error("Auto-mitigation call failed for %s: %s", src_ip, ex)
-                                auto_mitigated = False
+                            last_mitigated = mitigated_cooldowns.get(src_ip, 0.0)
+                            if now - last_mitigated >= ML_MITIGATION_COOLDOWN_S:
+                                logger.info("Triggering auto-mitigation block for IP: %s (reason: %s)", src_ip, block_reason)
+                                try:
+                                    success = await asyncio.to_thread(middleware_client.post_rule, src_ip, block_reason)
+                                    auto_mitigated = bool(success)
+                                except Exception as ex:
+                                    logger.error("Auto-mitigation call failed for %s: %s", src_ip, ex)
+                                    auto_mitigated = False
+                                # Record timestamp so debounce applies (including on 409 where success is False)
+                                mitigated_cooldowns[src_ip] = now
+                            else:
+                                logger.info(
+                                    "Auto-mitigation suppressed for %s (mitigation cooldown active: %.1fs remaining)",
+                                    src_ip,
+                                    ML_MITIGATION_COOLDOWN_S - (now - last_mitigated),
+                                )
                         else:
                             logger.info("Auto-mitigation disabled (ML_AUTO_MITIGATE=false); skipping block rule for %s", src_ip)
                             auto_mitigated = False
@@ -388,10 +402,11 @@ async def lifespan(app: FastAPI):
 
     # Startup configuration logging
     logger.info(
-        "Effective ML config: local_ips=%s, auto_mitigate=%s, alert_cooldown_s=%.1f, flow_table_ttl_s=%.1f, max_flow_entries=%d",
+        "Effective ML config: local_ips=%s, auto_mitigate=%s, alert_cooldown_s=%.1f, mitigation_cooldown_s=%.1f, flow_table_ttl_s=%.1f, max_flow_entries=%d",
         sorted(list(ML_IGNORE_IPS)),
         ML_AUTO_MITIGATE,
         ML_ALERT_COOLDOWN_S,
+        ML_MITIGATION_COOLDOWN_S,
         FLOW_TABLE_TTL_S,
         MAX_FLOW_ENTRIES,
     )
@@ -473,6 +488,7 @@ class ModelStatusResponse(BaseModel):
     baselines: Dict[str, float]
     auto_mitigate: bool
     alert_cooldown_s: float
+    mitigation_cooldown_s: Optional[float] = None
     num_local_ips: int
     flow_table_size: int
     tracked_source_ips: int
@@ -533,6 +549,7 @@ def get_model_status():
         baselines=baselines,
         auto_mitigate=ML_AUTO_MITIGATE,
         alert_cooldown_s=ML_ALERT_COOLDOWN_S,
+        mitigation_cooldown_s=ML_MITIGATION_COOLDOWN_S,
         num_local_ips=len(ML_IGNORE_IPS),
         flow_table_size=len(flow_table),
         tracked_source_ips=len(ip_event_windows),
