@@ -3,6 +3,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 
 router.use(auth);
+router.use(auth.requireRole('admin'));
 
 // Helper to construct threads array from Redis hash
 function buildThreadsList(stats) {

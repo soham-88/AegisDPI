@@ -88,6 +88,31 @@ export interface BlocklistRule {
   added_by: string;
   source?: string;
   reason: string;
+  ttl_s?: number | null;
+  expires_at?: string | null;
+  strikes_24h?: number;
+}
+
+export interface AllowlistEntry {
+  entry: string;
+  note?: string;
+  added_by: string;
+  added_at: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  ts: string;
+  actor: string;
+  role: string;
+  action: string;
+  target: string;
+  source: string;
+  reason: string;
+  ttl_s?: number | null;
+  expires_at?: string | null;
+  result: string;
+  detail?: string;
 }
 
 export interface BlocklistEvent {

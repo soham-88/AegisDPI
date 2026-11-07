@@ -60,10 +60,16 @@ const mlRoutes = require('./routes/ml');
 const logsRoutes = require('./routes/logs');
 const captureRoutes = require('./routes/capture');
 const reportRoutes = require('./routes/report');
+const allowlistRoutes = require('./routes/allowlist');
+const auditRoutes = require('./routes/audit');
 const engineManager = require('./services/engine_manager');
+const { sweepExpired } = require('./services/blocklist_store');
+const { CONFIG } = require('./services/block_policy');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/rules', rulesRoutes);
+app.use('/api/allowlist', allowlistRoutes);
+app.use('/api/audit', auditRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/threads', statsRoutes);
 app.use('/api/anomalies', anomaliesRoutes);
@@ -90,6 +96,23 @@ async function start() {
     try {
         await redisClient.connect();
         console.log('[REDIS] Connected');
+
+        // Startup sweep: remove any blocks that expired while middleware was down
+        try {
+            const initialExpired = await sweepExpired({ redisClient, io });
+            console.log(`[SWEEPER] Startup sweep completed: ${initialExpired.length} expired block(s) removed`);
+        } catch (sweepErr) {
+            console.error('[SWEEPER] Startup sweep error:', sweepErr);
+        }
+
+        // Periodic sweeper for expired block rules
+        setInterval(async () => {
+            try {
+                await sweepExpired({ redisClient, io });
+            } catch (err) {
+                console.error('[SWEEPER] Periodic sweep error:', err);
+            }
+        }, CONFIG.BLOCK_SWEEP_INTERVAL_MS);
 
         // Periodically trim dpi:logs stream every 30s (approximate trim to 20,000 entries)
         setInterval(async () => {

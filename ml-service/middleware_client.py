@@ -65,16 +65,28 @@ class MiddlewareClient:
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=5)
             if res.status_code == 201:
-                print(f"[MIDDLEWARE-CLIENT] Successfully enforced block rule for IP: {ip}")
+                data = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+                ttl_s = data.get("ttl_s")
+                expires_at = data.get("expires_at")
+                print(f"[MIDDLEWARE-CLIENT] Successfully enforced block rule for IP: {ip} (ttl_s: {ttl_s}, expires_at: {expires_at})")
                 return True
+            elif res.status_code == 409:
+                print(f"[MIDDLEWARE-CLIENT] Block rule suppressed: {ip} is allowlisted")
+                return False
             elif res.status_code == 401:
                 print("[MIDDLEWARE-CLIENT] Received 401 Unauthorized. Refreshing token and retrying...")
                 if self.login():
                     headers["Authorization"] = f"Bearer {self._token}"
                     retry_res = requests.post(url, json=payload, headers=headers, timeout=5)
                     if retry_res.status_code == 201:
-                        print(f"[MIDDLEWARE-CLIENT] Retry succeeded for IP: {ip}")
+                        data = retry_res.json() if retry_res.headers.get("content-type", "").startswith("application/json") else {}
+                        ttl_s = data.get("ttl_s")
+                        expires_at = data.get("expires_at")
+                        print(f"[MIDDLEWARE-CLIENT] Retry succeeded for IP: {ip} (ttl_s: {ttl_s}, expires_at: {expires_at})")
                         return True
+                    elif retry_res.status_code == 409:
+                        print(f"[MIDDLEWARE-CLIENT] Block rule suppressed: {ip} is allowlisted")
+                        return False
                     else:
                         print(f"[MIDDLEWARE-CLIENT] Retry failed ({retry_res.status_code}): {retry_res.text}")
                         return False

@@ -96,7 +96,12 @@ interface AegisStoreState {
   addLog: (log: DpiLogEntry) => void;
   addLogBatch: (batch: any) => void;
   fetchBlocklist: () => Promise<void>;
-  addBlocklistRule: (ip: string, reason?: string, source?: string) => Promise<void>;
+  addBlocklistRule: (
+    ip: string,
+    reason?: string,
+    source?: string,
+    ttl_s?: number | null
+  ) => Promise<void>;
   removeBlocklistRule: (ip: string) => Promise<void>;
   fetchThreads: () => Promise<void>;
   fetchAnomalies: () => Promise<void>;
@@ -560,22 +565,11 @@ export const useAegisStore = create<AegisStoreState>((set, get) => ({
     }
   },
 
-  addBlocklistRule: async (ip, reason, source = "manual") => {
+  addBlocklistRule: async (ip, reason, source = "manual", ttl_s = null) => {
     try {
-      const res = await api.addBlocklistRule(ip, reason, source);
-      const currentList = get().blocklist;
-      const updatedList: BlocklistRule[] = [
-        {
-          ip,
-          added_at: new Date().toISOString(),
-          added_by: source === "ml_auto" ? "ML auto-mitigation" : "admin",
-          source: source || "manual",
-          reason: reason || "Manual Admin Block",
-        },
-        ...currentList.filter((r) => r.ip !== ip),
-      ];
+      const res = await api.addBlocklistRule(ip, reason, source, ttl_s);
+      await get().fetchBlocklist();
       set((state) => ({
-        blocklist: updatedList,
         blocklistEvents: [res.event, ...state.blocklistEvents],
       }));
     } catch (err) {

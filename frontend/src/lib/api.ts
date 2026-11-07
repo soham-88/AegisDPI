@@ -2,6 +2,8 @@ import {
   SystemStats,
   BlocklistRule,
   BlocklistEvent,
+  AllowlistEntry,
+  AuditLogEntry,
   WorkerThreadStats,
   AnomalyAlert,
   MlStatusResponse,
@@ -217,6 +219,9 @@ export const api = {
           added_by: item?.added_by || "admin",
           source: item?.source,
           reason: item?.reason || "Active block rule",
+          ttl_s: item?.ttl_s !== undefined ? item.ttl_s : null,
+          expires_at: item?.expires_at || null,
+          strikes_24h: item?.strikes_24h || 0,
         };
       });
     } catch (err: any) {
@@ -228,16 +233,22 @@ export const api = {
   async addBlocklistRule(
     ip: string,
     reason = "Manual Admin Block",
-    source = "manual"
+    source = "manual",
+    ttl_s: number | null = null
   ): Promise<{ success: boolean; event: BlocklistEvent }> {
+    const payload: any = {
+      type: "ip",
+      value: ip,
+      reason,
+      source,
+    };
+    if (ttl_s !== null && ttl_s !== undefined && ttl_s > 0) {
+      payload.ttl_s = ttl_s;
+    }
+
     const res = await authFetch(`${API_BASE_URL}/api/rules`, {
       method: "POST",
-      body: JSON.stringify({
-        type: "ip",
-        value: ip,
-        reason,
-        source,
-      }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -255,6 +266,54 @@ export const api = {
         raw_payload: `ADD IP ${ip}`,
       },
     };
+  },
+
+  async getAllowlist(): Promise<AllowlistEntry[]> {
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/allowlist`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return Array.isArray(data.entries) ? data.entries : [];
+    } catch (err: any) {
+      if (err.message === "Session expired - please sign in again") throw err;
+      return [];
+    }
+  },
+
+  async addAllowlistEntry(entry: string, note = ""): Promise<{ success: boolean; entry?: AllowlistEntry }> {
+    const res = await authFetch(`${API_BASE_URL}/api/allowlist`, {
+      method: "POST",
+      body: JSON.stringify({ entry, note }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return await res.json();
+  },
+
+  async removeAllowlistEntry(entry: string): Promise<{ success: boolean }> {
+    const res = await authFetch(`${API_BASE_URL}/api/allowlist`, {
+      method: "DELETE",
+      body: JSON.stringify({ entry }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return await res.json();
+  },
+
+  async getAuditLog(limit = 200): Promise<AuditLogEntry[]> {
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/audit?limit=${limit}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return Array.isArray(data.audit) ? data.audit : [];
+    } catch (err: any) {
+      if (err.message === "Session expired - please sign in again") throw err;
+      return [];
+    }
   },
 
   async removeBlocklistRule(ip: string): Promise<{ success: boolean; event: BlocklistEvent }> {

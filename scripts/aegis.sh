@@ -90,18 +90,7 @@ restart_ml() {
     wait_for_port "ML" 8000
 }
 
-start_services() {
-    # 1. Redis (6379)
-    if is_port_open 6379; then
-        echo "Redis: port 6379 already open, skipping start"
-    else
-        redis-server --requirepass "${REDIS_PW}" --bind 127.0.0.1 --daemonize yes --dir "${REPO_ROOT}"
-    fi
-
-    # 2. ML Service (8000)
-    start_ml
-
-    # 3. Middleware (4000)
+start_mw() {
     if is_port_open 4000; then
         echo "Middleware: port 4000 already open, skipping start"
     else
@@ -110,23 +99,9 @@ start_services() {
         echo $! > "${RUN_DIR}/middleware.pid"
         popd > /dev/null
     fi
-
-    # Wait until 6379, 4000 and 8000 answer (20 s timeout each)
-    local all_ok=0
-    wait_for_port "Redis" 6379 || all_ok=1
-    wait_for_port "Middleware" 4000 || all_ok=1
-    wait_for_port "ML" 8000 || all_ok=1
-
-    if [ ${all_ok} -eq 0 ]; then
-        echo "Open http://localhost:4000"
-    else
-        echo "One or more services failed to start within 20s"
-        return 1
-    fi
 }
 
-stop_services() {
-    # 1. Stop Middleware via PID file
+stop_mw() {
     if [ -f "${RUN_DIR}/middleware.pid" ]; then
         local mw_pid
         mw_pid=$(cat "${RUN_DIR}/middleware.pid" 2>/dev/null || true)
@@ -147,6 +122,47 @@ stop_services() {
             sleep 0.5
         done
     fi
+}
+
+restart_mw() {
+    echo "Stopping Middleware..."
+    stop_mw
+    echo "Starting Middleware..."
+    start_mw
+    wait_for_port "Middleware" 4000
+}
+
+start_services() {
+    # 1. Redis (6379)
+    if is_port_open 6379; then
+        echo "Redis: port 6379 already open, skipping start"
+    else
+        redis-server --requirepass "${REDIS_PW}" --bind 127.0.0.1 --daemonize yes --dir "${REPO_ROOT}"
+    fi
+
+    # 2. ML Service (8000)
+    start_ml
+
+    # 3. Middleware (4000)
+    start_mw
+
+    # Wait until 6379, 4000 and 8000 answer (20 s timeout each)
+    local all_ok=0
+    wait_for_port "Redis" 6379 || all_ok=1
+    wait_for_port "Middleware" 4000 || all_ok=1
+    wait_for_port "ML" 8000 || all_ok=1
+
+    if [ ${all_ok} -eq 0 ]; then
+        echo "Open http://localhost:4000"
+    else
+        echo "One or more services failed to start within 20s"
+        return 1
+    fi
+}
+
+stop_services() {
+    # 1. Stop Middleware
+    stop_mw
 
     # 2. Stop ML
     stop_ml
@@ -252,12 +268,15 @@ case "${1:-}" in
     restart-ml)
         restart_ml
         ;;
+    restart-mw)
+        restart_mw
+        ;;
     logs)
         shift
         logs_service "${1:-}"
         ;;
     *)
-        echo "Usage: $0 {start|stop|status|restart-ml|logs <svc>}"
+        echo "Usage: $0 {start|stop|status|restart-ml|restart-mw|logs <svc>}"
         exit 1
         ;;
 esac

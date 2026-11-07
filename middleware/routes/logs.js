@@ -3,6 +3,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 
 router.use(auth);
+router.use(auth.requireRole('admin'));
 
 // GET /api/logs?limit=200 (default 200, max 500)
 router.get('/', async (req, res) => {

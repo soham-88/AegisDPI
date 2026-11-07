@@ -4,6 +4,7 @@ const auth = require('../middleware/auth');
 const engineManager = require('../services/engine_manager');
 
 router.use(auth);
+router.use(auth.requireRole('admin'));
 
 // GET /api/capture/interfaces
 router.get('/interfaces', (req, res) => {
