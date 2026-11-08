@@ -1,0 +1,13 @@
+# Gitleaks configuration for AegisDPI
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist example environment templates and test fixtures containing mock placeholders"
+paths = [
+  '''(^|/)middleware/\.env\.example$''',
+  '''(^|/)ml-service/\.env\.example$''',
+  '''(^|/)middleware/tests/.*''',
+]
+

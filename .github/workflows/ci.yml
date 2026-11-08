@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: DPI Engine (C++)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libpcap-dev libhiredis-dev libnftables-dev
+
+      - name: Configure and build engine
+        run: |
+          cmake -B engine/build -DCMAKE_BUILD_TYPE=Release engine
+          cmake --build engine/build -j$(nproc)
+
+      - name: Run engine unit tests
+        run: |
+          engine/build/dpi_tests
+
+      - name: Binary security gate
+        run: |
+          if readelf -d engine/build/dpi_engine | grep -E 'RPATH|RUNPATH'; then
+            echo "Security gate failed: RPATH/RUNPATH found in dpi_engine" >&2
+            exit 1
+          fi
+          if ldd engine/build/dpi_engine | grep "not found"; then
+            echo "Security gate failed: Missing dynamic dependencies in dpi_engine" >&2
+            exit 1
+          fi
+
+      - name: Integration smoke test
+        run: |
+          OUTPUT=$(engine/build/dpi_engine --replay engine/test_dpi.pcap --lbs 2 --fps 2 --redis-host 127.0.0.254)
+          echo "$OUTPUT"
+          echo "$OUTPUT" | grep -F "Total Packets Read : 77"
+
+  middleware:
+    name: Middleware (Node.js)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: middleware
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'middleware/package-lock.json'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit and integration tests
+        run: npm test
+
+      - name: Production dependency security audit
+        run: npm audit --omit=dev --audit-level=high
+
+  frontend:
+    name: Frontend (React / Vite)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Production dependency security audit
+        run: npm audit --omit=dev --audit-level=high
+
+  ml-service:
+    name: ML Service (Python 3.14)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ml-service
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: 'pip'
+          cache-dependency-path: 'ml-service/requirements.txt'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ML unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Dependency vulnerability audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
+  scripts:
+    name: Shell Scripts (ShellCheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        run: shellcheck -S error scripts/*.sh scripts/dataset/*.sh
+
+  secrets:
+    name: Secret Scanning (Gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks Action
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
