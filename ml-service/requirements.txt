@@ -21,7 +21,7 @@ requests==2.34.2
 scikit-learn==1.9.1
 scipy==1.18.1
 starlette==1.6.0
-threadpoolctl==3.7.0
+threadpoolctl==3.8.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 urllib3==2.8.0
