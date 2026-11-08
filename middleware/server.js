@@ -7,16 +7,89 @@ const cors = require('cors');
 const { createClient } = require('redis');
 const jwt = require('jsonwebtoken');
 
+// Startup secret checks
+const JWT_PLACEHOLDER = 'replace_with_a_secure_jwt_secret_key';
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32 || process.env.JWT_SECRET === JWT_PLACEHOLDER) {
+    console.error('[FATAL] Insecure or missing JWT_SECRET: must be at least 32 characters and not match the default placeholder.');
+    process.exit(1);
+}
+
+let redisHasPassword = false;
+try {
+    if (process.env.REDIS_URL) {
+        const parsedRedisUrl = new URL(process.env.REDIS_URL);
+        redisHasPassword = Boolean(parsedRedisUrl.password);
+    }
+} catch (_) {
+    redisHasPassword = false;
+}
+
+if (!redisHasPassword) {
+    console.error('[FATAL] Insecure or missing REDIS_URL: must be provided and contain password authentication (redis://[:password]@host:port).');
+    process.exit(1);
+}
+
+if (!process.env.ADMIN_PASSWORD_HASH) {
+    console.warn('[SECURITY WARNING] ADMIN_PASSWORD_HASH is unset; admin login via password will be unavailable.');
+}
+
+const trustProxy = process.env.TRUST_PROXY?.toLowerCase() === 'true';
+console.log(`[SECURITY] Client IP resolution: X-Forwarded-For is ${trustProxy ? 'TRUSTED (TRUST_PROXY=true)' : 'IGNORED (direct connection, TRUST_PROXY=false)'}`);
+
+const securityHeaders = require('./middleware/security_headers');
+const { createRateLimiter } = require('./middleware/rate_limit');
+
+// CORS configuration (Express and Socket.io)
+const DEFAULT_CORS_ORIGINS = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:4000',
+    'http://127.0.0.1:4000',
+];
+const allowedCorsOrigins = process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+    : DEFAULT_CORS_ORIGINS;
+
+const rejectedCorsOrigins = new Set();
+
+const corsOriginDelegate = (origin, callback) => {
+    // Requests without an Origin header (curl, ML service) must keep working
+    if (!origin) {
+        return callback(null, true);
+    }
+    if (allowedCorsOrigins.includes(origin)) {
+        return callback(null, true);
+    }
+    // Disallowed origins get no CORS headers; log one line per distinct rejected origin
+    if (!rejectedCorsOrigins.has(origin)) {
+        rejectedCorsOrigins.add(origin);
+        console.warn(`[CORS] Rejected disallowed origin: ${origin}`);
+    }
+    return callback(null, false);
+};
+
+const corsOptions = {
+    origin: corsOriginDelegate,
+    credentials: true,
+};
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' }
+    cors: {
+        origin: corsOriginDelegate,
+        credentials: true,
+    }
 });
 
-app.use(cors());
+app.use(securityHeaders);
+app.use(cors(corsOptions));
 app.use(express.json());
 
-// Socket.io JWT handshake authentication
+// General API rate limiter (sliding 60 s window, default 600 req/min)
+app.use('/api', createRateLimiter());
+
+// Socket.io JWT handshake authentication & admin role check
 io.use((socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace(/^Bearer\s+/i, '')?.trim();
     if (!token) {
@@ -25,6 +98,9 @@ io.use((socket, next) => {
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         socket.user = decoded;
+        if (decoded.role !== 'admin') {
+            return next(new Error(`Forbidden for role ${decoded.role || 'unknown'}`));
+        }
         next();
     } catch (err) {
         return next(new Error('Authentication error: Session expired or invalid token'));

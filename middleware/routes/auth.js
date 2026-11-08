@@ -2,20 +2,10 @@ const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const { getClientIp } = require('../middleware/client_ip');
 
 // In-memory rate limiting: ip -> Array of failed attempt timestamps (ms)
 const failedAttempts = new Map();
-
-function getClientIp(req) {
-    let ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
-    if (ip.startsWith('::ffff:')) {
-        ip = ip.substring(7);
-    }
-    if (ip === '::1') {
-        ip = '127.0.0.1';
-    }
-    return ip;
-}
 
 function cleanAndCountFailed(ip) {
     const now = Date.now();
