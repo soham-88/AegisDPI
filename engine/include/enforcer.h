@@ -3,10 +3,10 @@
 
 #include <string>
 #include <regex>
-#include <cstdlib>
 #include <iostream>
 #include <unordered_set>
 #include <mutex>
+#include <nftables/libnftables.h>
 
 class Enforcer {
 public:
@@ -23,6 +23,7 @@ private:
     bool is_live_{true};
     std::unordered_set<std::string> blocked_ips_;
     mutable std::mutex mutex_;
+    struct nft_ctx* nft_{nullptr};
 
     bool isValidIPv4(const std::string& ip) {
         // Strict regex for IPv4 (and optional CIDR /1-32)
@@ -30,21 +31,62 @@ private:
         return std::regex_match(ip, ip_regex);
     }
 
+    bool runCmdLocked(const std::string& cmd, bool ignore_errors = false) {
+        if (!nft_) {
+            return false;
+        }
+        int rc = nft_run_cmd_from_buffer(nft_, cmd.c_str());
+        if (rc != 0) {
+            const char* err = nft_ctx_get_error_buffer(nft_);
+            if (!ignore_errors) {
+                std::cerr << "[NftablesEnforcer] Command failed (" << rc << "): " << cmd << "\n";
+                if (err && *err) {
+                    std::cerr << "[NftablesEnforcer] Error buffer: " << err << "\n";
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
 public:
-    NftablesEnforcer(bool is_live = true) : is_live_(is_live) {}
+    NftablesEnforcer(bool is_live = true) : is_live_(is_live) {
+        if (is_live_) {
+            nft_ = nft_ctx_new(NFT_CTX_DEFAULT);
+            if (nft_) {
+                nft_ctx_buffer_output(nft_);
+                nft_ctx_buffer_error(nft_);
+            } else {
+                std::cerr << "[NftablesEnforcer] Failed to create nft_ctx\n";
+            }
+        }
+    }
+
+    ~NftablesEnforcer() override {
+        teardown();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (nft_) {
+            nft_ctx_free(nft_);
+            nft_ = nullptr;
+        }
+    }
 
     bool initialize() override {
         if (!is_live_) return true;
-        // Pre-emptively wipe any left-over table from a prior crash to ensure clean state
-        if (std::system("nft delete table inet aegis >/dev/null 2>&1") != 0) {
-            // Table may not exist yet, safe to ignore
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!nft_) {
+            std::cerr << "[NftablesEnforcer] Cannot initialize: nft_ctx is null\n";
+            return false;
         }
-        
+
+        // Pre-emptively wipe any left-over table from a prior crash to ensure clean state
+        runCmdLocked("delete table inet aegis", true);
+
         bool ok = true;
-        ok &= (std::system("nft add table inet aegis") == 0);
-        ok &= (std::system("nft add chain inet aegis prerouting '{ type filter hook prerouting priority -300; }'") == 0);
-        ok &= (std::system("nft add set inet aegis blocklist '{ type ipv4_addr; }'") == 0);
-        ok &= (std::system("nft add rule inet aegis prerouting ip saddr @blocklist drop") == 0);
+        ok &= runCmdLocked("add table inet aegis");
+        ok &= runCmdLocked("add chain inet aegis prerouting { type filter hook prerouting priority -300; }");
+        ok &= runCmdLocked("add set inet aegis blocklist { type ipv4_addr; }");
+        ok &= runCmdLocked("add rule inet aegis prerouting ip saddr @blocklist drop");
         return ok;
     }
 
@@ -53,21 +95,14 @@ public:
             std::cerr << "[NftablesEnforcer] Rejecting invalid IP/CIDR: " << ip << "\n";
             return false;
         }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            blocked_ips_.insert(ip);
-            if (ip.size() > 3 && ip.substr(ip.size() - 3) == "/32") {
-                blocked_ips_.insert(ip.substr(0, ip.size() - 3));
-            }
+        std::lock_guard<std::mutex> lock(mutex_);
+        blocked_ips_.insert(ip);
+        if (ip.size() > 3 && ip.substr(ip.size() - 3) == "/32") {
+            blocked_ips_.insert(ip.substr(0, ip.size() - 3));
         }
         if (!is_live_) return true;
-        std::string cmd = "nft add element inet aegis blocklist '{ " + ip + " }'";
-        int ret = std::system(cmd.c_str());
-        if (ret != 0) {
-            std::cerr << "[NftablesEnforcer] Command failed (" << ret << "): " << cmd << "\n";
-            return false;
-        }
-        return true;
+        std::string cmd = "add element inet aegis blocklist { " + ip + " }";
+        return runCmdLocked(cmd);
     }
 
     bool removeBlock(const std::string& ip) override {
@@ -75,21 +110,14 @@ public:
             std::cerr << "[NftablesEnforcer] Rejecting invalid IP/CIDR: " << ip << "\n";
             return false;
         }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            blocked_ips_.erase(ip);
-            if (ip.size() > 3 && ip.substr(ip.size() - 3) == "/32") {
-                blocked_ips_.erase(ip.substr(0, ip.size() - 3));
-            }
+        std::lock_guard<std::mutex> lock(mutex_);
+        blocked_ips_.erase(ip);
+        if (ip.size() > 3 && ip.substr(ip.size() - 3) == "/32") {
+            blocked_ips_.erase(ip.substr(0, ip.size() - 3));
         }
         if (!is_live_) return true;
-        std::string cmd = "nft delete element inet aegis blocklist '{ " + ip + " }'";
-        int ret = std::system(cmd.c_str());
-        if (ret != 0) {
-            std::cerr << "[NftablesEnforcer] Command failed (" << ret << "): " << cmd << "\n";
-            return false;
-        }
-        return true;
+        std::string cmd = "delete element inet aegis blocklist { " + ip + " }";
+        return runCmdLocked(cmd);
     }
 
     bool isBlocked(const std::string& ip) override {
@@ -99,14 +127,10 @@ public:
     }
 
     void teardown() override {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            blocked_ips_.clear();
-        }
-        if (is_live_) {
-            if (std::system("nft delete table inet aegis >/dev/null 2>&1") != 0) {
-                // Table may already be deleted or not exist
-            }
+        std::lock_guard<std::mutex> lock(mutex_);
+        blocked_ips_.clear();
+        if (is_live_ && nft_) {
+            runCmdLocked("delete table inet aegis", true);
         }
     }
 };

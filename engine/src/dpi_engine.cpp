@@ -12,6 +12,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 #include "enforcer.h"
 #include "flow_hash.h"
@@ -357,10 +358,43 @@ int main(int argc, char *argv[]) {
   }
 
   std::signal(SIGINT, signal_handler);
+  std::signal(SIGTERM, signal_handler);
 
   std::cout << "dpi_engine: Multi-threaded DPI Engine starting...\n";
   if (!live_iface.empty()) {
     std::cout << "Mode: LIVE (Interface: " << live_iface << ")\n";
+#ifdef __linux__
+    if (geteuid() != 0) {
+      bool caps_ok = false;
+      std::ifstream status_file("/proc/self/status");
+      if (status_file.is_open()) {
+        std::string line;
+        while (std::getline(status_file, line)) {
+          if (line.rfind("CapEff:", 0) == 0) {
+            std::string val = line.substr(7);
+            size_t first = val.find_first_not_of(" \t");
+            if (first != std::string::npos) {
+              val = val.substr(first);
+            }
+            try {
+              uint64_t capeff = std::stoull(val, nullptr, 16);
+              constexpr uint64_t REQUIRED_CAPS = (1ULL << 12) | (1ULL << 13); // CAP_NET_ADMIN (12), CAP_NET_RAW (13)
+              if ((capeff & REQUIRED_CAPS) == REQUIRED_CAPS) {
+                caps_ok = true;
+              }
+            } catch (...) {
+              caps_ok = false;
+            }
+            break;
+          }
+        }
+      }
+      if (!caps_ok) {
+        std::cerr << "[FATAL] dpi_engine needs CAP_NET_RAW and CAP_NET_ADMIN - install it with scripts/install_engine.sh\n";
+        return 1;
+      }
+    }
+#endif
   } else {
     std::cout << "Mode: REPLAY (File: " << input_pcap << ")\n";
   }
@@ -372,8 +406,8 @@ int main(int argc, char *argv[]) {
   if (!live_iface.empty()) {
     enforcer = std::make_shared<NftablesEnforcer>(true);
     if (!enforcer->initialize()) {
-      std::cerr << "[ERROR] Failed to initialize NftablesEnforcer. Are you "
-                   "running as root?\n";
+      std::cerr << "[ERROR] Failed to initialize NftablesEnforcer. (dpi_engine "
+                   "needs CAP_NET_RAW and CAP_NET_ADMIN - install it with scripts/install_engine.sh)\n";
       return 1;
     }
   } else {

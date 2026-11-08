@@ -43,11 +43,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ENGINE="${REPO_DIR}/engine/build/dpi_engine"
+ENGINE="${AEGIS_ENGINE:-/usr/local/sbin/aegis-dpi-engine}"
 PASS_FILE="${REPO_DIR}/run/redis.pass"
 
-# 1. Safety check: running dpi_engine
-if pgrep -f "dpi_engine" >/dev/null 2>&1; then
+# 1. Safety check: running dpi_engine or aegis-dpi-engine
+if pgrep -f "(aegis-dpi-engine|dpi_engine)" >/dev/null 2>&1; then
   echo "Error: a dpi_engine process is already running." >&2
   echo "Live mode installs nftables rules and would clash with a running engine. Stop it first." >&2
   exit 1
@@ -71,10 +71,16 @@ if ! command -v redis-server >/dev/null 2>&1; then
   exit 1
 fi
 
-# 4. Safety check: engine binary and redis.pass
+# 4. Safety check: engine binary, capabilities, and redis.pass
 if [[ ! -x "${ENGINE}" ]]; then
   echo "Error: Engine binary not found or not executable at: ${ENGINE}" >&2
-  echo "Please build the engine first (e.g. cmake --build engine/build)" >&2
+  echo "Please install it first: sudo ./scripts/install_engine.sh" >&2
+  exit 1
+fi
+
+if ! getcap "${ENGINE}" 2>/dev/null | grep -E "cap_net_admin.*cap_net_raw|cap_net_raw.*cap_net_admin" >/dev/null; then
+  echo "Error: Engine binary at ${ENGINE} lacks required capabilities (CAP_NET_RAW and CAP_NET_ADMIN)." >&2
+  echo "Please install it with capabilities: sudo ./scripts/install_engine.sh" >&2
   exit 1
 fi
 
@@ -129,16 +135,16 @@ cleanup() {
 
   # 1. Stop engine gracefully with SIGINT so nftables state is cleaned up
   if [ -n "${ENGINE_PID:-}" ] && kill -0 "${ENGINE_PID}" 2>/dev/null; then
-    echo "Stopping dpi_engine (PID ${ENGINE_PID})..."
-    sudo pkill -INT -f "engine/build/dpi_engine --live veth_lab" 2>/dev/null || kill -INT "${ENGINE_PID}" 2>/dev/null || true
+    echo "Stopping engine (PID ${ENGINE_PID})..."
+    kill -INT "${ENGINE_PID}" 2>/dev/null || pkill -INT -f "(aegis-dpi-engine|dpi_engine).*--live veth_lab" 2>/dev/null || true
     wait "${ENGINE_PID}" 2>/dev/null || true
   else
-    sudo pkill -INT -f "engine/build/dpi_engine --live veth_lab" 2>/dev/null || true
+    pkill -INT -f "(aegis-dpi-engine|dpi_engine).*--live veth_lab" 2>/dev/null || true
   fi
 
-  # Wait up to 10 seconds for the dpi_engine process to exit
+  # Wait up to 10 seconds for the engine process to exit
   local waited=0
-  while pgrep -f "engine/build/dpi_engine --live veth_lab" >/dev/null 2>&1; do
+  while pgrep -f "(aegis-dpi-engine|dpi_engine).*--live veth_lab" >/dev/null 2>&1; do
     sleep 0.2
     waited=$((waited + 1))
     if [ "${waited}" -ge 50 ]; then
@@ -147,17 +153,17 @@ cleanup() {
   done
 
   # If it is still running, send SIGTERM and wait 5 more seconds
-  if pgrep -f "engine/build/dpi_engine --live veth_lab" >/dev/null 2>&1; then
-    echo "dpi_engine did not exit after SIGINT; sending SIGTERM..."
+  if pgrep -f "(aegis-dpi-engine|dpi_engine).*--live veth_lab" >/dev/null 2>&1; then
+    echo "engine did not exit after SIGINT; sending SIGTERM..."
     if [ -n "${ENGINE_PID:-}" ] && kill -0 "${ENGINE_PID}" 2>/dev/null; then
-      sudo pkill -TERM -f "engine/build/dpi_engine --live veth_lab" 2>/dev/null || kill -TERM "${ENGINE_PID}" 2>/dev/null || true
+      kill -TERM "${ENGINE_PID}" 2>/dev/null || pkill -TERM -f "(aegis-dpi-engine|dpi_engine).*--live veth_lab" 2>/dev/null || true
       wait "${ENGINE_PID}" 2>/dev/null || true
     else
-      sudo pkill -TERM -f "engine/build/dpi_engine --live veth_lab" 2>/dev/null || true
+      pkill -TERM -f "(aegis-dpi-engine|dpi_engine).*--live veth_lab" 2>/dev/null || true
     fi
 
     waited=0
-    while pgrep -f "engine/build/dpi_engine --live veth_lab" >/dev/null 2>&1; do
+    while pgrep -f "(aegis-dpi-engine|dpi_engine).*--live veth_lab" >/dev/null 2>&1; do
       sleep 0.2
       waited=$((waited + 1))
       if [ "${waited}" -ge 25 ]; then
@@ -214,8 +220,8 @@ fi
 ENGINE_LOG="/tmp/aegis_bench_live_engine.log"
 rm -f "${ENGINE_LOG}"
 
-echo "Starting dpi_engine in live mode on veth_lab (FPS: ${FPS})..."
-sudo -n "${ENGINE}" --live veth_lab --lbs 2 --fps "${FPS}" --redis-host 127.0.0.2 --redis-password-file "${PASS_FILE}" > "${ENGINE_LOG}" 2>&1 &
+echo "Starting engine in live mode on veth_lab (FPS: ${FPS})..."
+"${ENGINE}" --live veth_lab --lbs 2 --fps "${FPS}" --redis-host 127.0.0.2 --redis-password-file "${PASS_FILE}" > "${ENGINE_LOG}" 2>&1 &
 ENGINE_PID=$!
 
 connected=0

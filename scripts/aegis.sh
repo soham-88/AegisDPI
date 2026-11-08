@@ -175,7 +175,7 @@ stop_services() {
     done
 
     # 4. Confirm no dpi_engine process remains
-    if pgrep -f "dpi_engine" >/dev/null 2>&1; then
+    if pgrep -f "(aegis-dpi-engine|dpi_engine)" >/dev/null 2>&1; then
         echo "dpi_engine process: STILL RUNNING"
     else
         echo "dpi_engine process: none"
@@ -210,7 +210,7 @@ status_services() {
         echo "ML: DOWN"
     fi
 
-    if pgrep -f "dpi_engine" >/dev/null 2>&1; then
+    if pgrep -f "(aegis-dpi-engine|dpi_engine)" >/dev/null 2>&1; then
         echo "Engine: running"
     else
         echo "Engine: stopped"

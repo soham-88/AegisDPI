@@ -11,6 +11,12 @@ find_package(Threads REQUIRED)
 find_library(PCAP_LIBRARY pcap REQUIRED)
 find_path(PCAP_INCLUDE_DIR pcap.h REQUIRED)
 include_directories(${PCAP_INCLUDE_DIR})
+
+# Find libnftables
+find_library(NFTABLES_LIBRARY nftables REQUIRED)
+find_path(NFTABLES_INCLUDE_DIR nftables/libnftables.h REQUIRED)
+include_directories(${NFTABLES_INCLUDE_DIR})
+
 include_directories(include)
 
 set(ENGINE_SOURCES
@@ -32,11 +38,12 @@ FetchContent_MakeAvailable(redis-plus-plus)
 
 # Target 1: dpi_simple (Single-threaded)
 add_executable(dpi_simple src/dpi_simple.cpp ${ENGINE_SOURCES})
-target_link_libraries(dpi_simple ${PCAP_LIBRARY})
+target_link_libraries(dpi_simple ${PCAP_LIBRARY} ${NFTABLES_LIBRARY})
 
 # Target 2: dpi_engine (Multi-threaded)
 add_executable(dpi_engine src/dpi_engine.cpp src/reporter.cpp src/rule_subscriber.cpp ${ENGINE_SOURCES})
-target_link_libraries(dpi_engine ${PCAP_LIBRARY} Threads::Threads redis++ hiredis)
+target_link_libraries(dpi_engine ${PCAP_LIBRARY} Threads::Threads redis++_static hiredis ${NFTABLES_LIBRARY})
+set_target_properties(dpi_engine PROPERTIES SKIP_BUILD_RPATH TRUE)
 
 # Target 3: GoogleTest setup via FetchContent
 include(FetchContent)
@@ -50,7 +57,7 @@ FetchContent_MakeAvailable(googletest)
 enable_testing()
 
 add_executable(dpi_tests tests/dpi_tests.cpp tests/flow_hash_test.cpp tests/queue_test.cpp ${ENGINE_SOURCES})
-target_link_libraries(dpi_tests GTest::gtest_main GTest::gtest ${PCAP_LIBRARY} Threads::Threads redis++ hiredis)
+target_link_libraries(dpi_tests GTest::gtest_main GTest::gtest ${PCAP_LIBRARY} Threads::Threads redis++_static hiredis ${NFTABLES_LIBRARY})
 
 include(GoogleTest)
 gtest_discover_tests(dpi_tests)

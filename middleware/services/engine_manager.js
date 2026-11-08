@@ -116,6 +116,20 @@ class EngineManager {
                 throw new Error('ENGINE_BIN is not set');
             }
 
+            // Verify binary exists, is owned by root (uid 0), and is not writable by group or others
+            let stat;
+            try {
+                stat = fs.statSync(engineBin);
+            } catch (err) {
+                throw new Error(`ENGINE_BIN not accessible at ${engineBin}: ${err.message}`);
+            }
+            if (stat.uid !== 0) {
+                throw new Error(`ENGINE_BIN (${engineBin}) must be owned by root (uid 0) - run scripts/install_engine.sh`);
+            }
+            if ((stat.mode & 0o022) !== 0) {
+                throw new Error(`ENGINE_BIN (${engineBin}) must not be writable by group or others - run scripts/install_engine.sh`);
+            }
+
             // Validate interface regex and existence in listInterfaces()
             if (!/^[A-Za-z0-9_.-]{1,15}$/.test(iface)) {
                 throw new Error(`Invalid interface name format: ${iface}`);
@@ -157,22 +171,22 @@ class EngineManager {
             fs.writeFileSync(pwFile, redisPassword + '\n', { mode: 0o600 });
             fs.chmodSync(pwFile, 0o600);
 
-            const args = ['-n', engineBin, '--live', iface, '--redis-password-file', pwFile, ...extraArgs];
-            const child = spawn('sudo', args, { shell: false });
+            const args = ['--live', iface, '--redis-password-file', pwFile, ...extraArgs];
+            const child = spawn(engineBin, args, { shell: false });
             this.child = child;
             this.pid = child.pid;
 
             child.stdout.on('data', (d) => this._appendLog(d));
             child.stderr.on('data', (d) => {
                 this._appendLog(d);
-                const str = d.toString().toLowerCase();
+                const raw = d.toString();
+                const lower = raw.toLowerCase();
                 if (
-                    str.includes('interactive authentication is required') ||
-                    str.includes('a password is required') ||
-                    str.includes('a terminal is required') ||
-                    str.includes('not allowed to execute')
+                    lower.includes('operation not permitted') ||
+                    lower.includes('permission') ||
+                    raw.includes('[FATAL] dpi_engine needs')
                 ) {
-                    this.lastError = 'sudo rule missing or does not match ENGINE_BIN - re-create /etc/sudoers.d/aegis-engine for the path in ENGINE_BIN';
+                    this.lastError = 'engine lacks CAP_NET_RAW/CAP_NET_ADMIN - run scripts/install_engine.sh';
                 }
             });
 

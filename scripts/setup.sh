@@ -192,7 +192,7 @@ HOST=127.0.0.1
 
 # DPI Engine management options
 ENGINE_CONTROL_ENABLED=true
-ENGINE_BIN=${REPO_ROOT}/engine/build/dpi_engine
+ENGINE_BIN=/usr/local/sbin/aegis-dpi-engine
 EOF
         chmod 600 "${MW_ENV}"
         echo "Created ${MW_ENV} (mode 600)."
@@ -227,36 +227,9 @@ EOF
     fi
 fi
 
-# 8. Install restricted sudoers rule for the engine binary (validated with visudo -cf)
-echo "==> Configuring restricted sudoers rule for engine binary..."
-CURRENT_USER="$(id -un)"
-ENGINE_BIN="${REPO_ROOT}/engine/build/dpi_engine"
-SUDOERS_FILE="/etc/sudoers.d/aegis-engine"
-RULE="${CURRENT_USER} ALL=(root) NOPASSWD: ${ENGINE_BIN}"
-
-NEED_INSTALL=1
-if [ -f "${SUDOERS_FILE}" ]; then
-    if sudo -n grep -Fxq "${RULE}" "${SUDOERS_FILE}" 2>/dev/null; then
-        echo "Sudoers rule in ${SUDOERS_FILE} is already present and matches."
-        NEED_INSTALL=0
-    fi
-fi
-
-if [ ${NEED_INSTALL} -eq 1 ]; then
-    TMP_SUDO=$(mktemp)
-    echo "${RULE}" > "${TMP_SUDO}"
-    echo "Validating rule with visudo -cf..."
-    if visudo -cf "${TMP_SUDO}" >/dev/null; then
-        sudo cp "${TMP_SUDO}" "${SUDOERS_FILE}"
-        sudo chmod 0440 "${SUDOERS_FILE}"
-        echo "Installed restricted sudoers rule to ${SUDOERS_FILE}."
-    else
-        echo "Error: visudo -cf validation failed for generated sudoers rule." >&2
-        rm -f "${TMP_SUDO}"
-        exit 1
-    fi
-    rm -f "${TMP_SUDO}"
-fi
+# 8. Install root-owned engine binary with Linux file capabilities (CAP_NET_RAW + CAP_NET_ADMIN)
+echo "==> Installing engine with Linux file capabilities..."
+"${REPO_ROOT}/scripts/install_engine.sh"
 
 echo "=========================================================="
 echo "Setup complete. Run ./scripts/aegis.sh start and open http://localhost:4000"

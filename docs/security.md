@@ -158,3 +158,27 @@ When `server.js` boots, it validates all critical security parameters before bin
   - Passwords and keys in `run/redis.pass` are stored with mode `600` (readable only by owner).
   - All real `.env` files are excluded from Git commits via `.gitignore`.
 
+---
+
+## 11. Engine Privileges (Capabilities vs Sudo)
+
+The packet processing and filtering engine (`dpi_engine`) operates under the principle of least privilege:
+
+### Comparison: Before vs. After
+
+| Security Aspect | Before (Insecure / Overprivileged) | After (Hardened / Least Privilege) |
+|---|---|---|
+| **Execution Identity** | Executed as full `root` via passwordless `sudo`. | Executed as regular unprivileged user (`soham`). |
+| **Privilege Mechanism** | Sudoers rule: `/etc/sudoers.d/aegis-engine` (`<user> ALL=(root) NOPASSWD: .../dpi_engine`). | Linux File Capabilities: `CAP_NET_RAW` + `CAP_NET_ADMIN` on the installed binary. |
+| **Binary Location & Ownership** | `engine/build/dpi_engine` located in user-writable repo directory; owned by unprivileged user. | `/usr/local/sbin/aegis-dpi-engine` installed root-owned (`root:root`, mode `0755`); non-writable by non-root users. |
+| **Library Loading (`RUNPATH`)** | Embedded `RUNPATH` pointing to user-writable build directory (`engine/build/_deps/redis-plus-plus-build`), loading shared `libredis++.so.1`. | Statically links `redis++_static`; `RPATH`/`RUNPATH` completely eliminated (`SKIP_BUILD_RPATH TRUE`); all dynamic libraries loaded strictly from `/usr/lib`. |
+| **Firewall Enforcement** | Child process shell execution via `std::system("nft ...")`, invoking `/bin/sh`. | In-process C API via `libnftables` (`nft_ctx_new`, `nft_run_cmd_from_buffer`); zero shell or fork/exec invocation. |
+| **Startup Verification** | Generic check expecting root. | Live mode verifies `CapEff` bits 12 (`CAP_NET_ADMIN`) and 13 (`CAP_NET_RAW`) in `/proc/self/status`; replay mode requires zero privileges. |
+| **Middleware Process Spawning** | Node.js middleware spawned `sudo -n ENGINE_BIN ...`. | Node.js middleware checks `fs.statSync()` (uid 0, non-writable by group/other) and spawns `ENGINE_BIN` directly without sudo. |
+
+### Threats Removed
+1. **Arbitrary Code Execution as Root**: Previously, because the binary in `engine/build/dpi_engine` was writable by the standard user and permitted passwordless sudo execution with any arguments, any compromised user process or script could replace the binary or inject malicious code to gain instantaneous root privileges.
+2. **Dynamic Library Hijacking (DLL Hijacking / Library Poisoning)**: Because `RUNPATH` pointed to a user-writable directory, an attacker could plant a malicious `libredis++.so.1` in the build folder and have it executed under root context when the engine started.
+3. **Shell & Command Injection**: Moving from `std::system("nft ...")` to in-process `libnftables` removed `/bin/sh` from the execution path, eliminating shell injection hazards.
+4. **Child Capability Loss**: Because Linux file capabilities are not inherited across fork/exec by unprivileged child processes without ambient capability setup, running `nft` in a child process previously forced the engine to run under full root. In-process `libnftables` executes netlink operations directly within the capability-empowered process.
+
