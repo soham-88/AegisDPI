@@ -163,6 +163,13 @@ export type NavSection =
   | "threads"
   | "architecture";
 
+export interface HealthStatusResponse {
+  redis: "ok" | "down";
+  ml: "online" | "offline";
+  engine: string;
+  engine_stats_fresh: boolean;
+}
+
 export interface MlStatusResponse {
   online: boolean;
   model_loaded?: boolean;
@@ -174,6 +181,7 @@ export interface MlStatusResponse {
   trained_at?: string;
   feature_schema?: string[];
   baselines?: Record<string, number>;
+  thresholds?: Record<string, any>;
   auto_mitigate?: boolean;
   alert_cooldown_s?: number;
   mitigation_cooldown_s?: number;
@@ -254,10 +262,12 @@ export interface SessionReportData {
     }>;
   };
   ml: {
+    model_version?: string;
     model_type: string;
     feature_count: number;
     auto_mitigate: boolean;
-    threshold: number;
+    threshold: number | string;
+    thresholds?: Record<string, any>;
     online: boolean;
   };
 }

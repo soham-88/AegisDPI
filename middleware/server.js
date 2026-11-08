@@ -116,7 +116,12 @@ io.on('connection', (socket) => {
 });
 
 // Redis Client
-const redisClient = createClient({ url: process.env.REDIS_URL });
+const redisClient = createClient({
+    url: process.env.REDIS_URL,
+    socket: {
+        reconnectStrategy: (retries) => Math.min(retries * 50, 2000)
+    }
+});
 redisClient.on('error', err => console.error('[Redis Client Error]', err));
 
 // Make redisClient and io available to routes
@@ -138,6 +143,7 @@ const captureRoutes = require('./routes/capture');
 const reportRoutes = require('./routes/report');
 const allowlistRoutes = require('./routes/allowlist');
 const auditRoutes = require('./routes/audit');
+const healthRoutes = require('./routes/health');
 const engineManager = require('./services/engine_manager');
 const { sweepExpired } = require('./services/blocklist_store');
 const { CONFIG } = require('./services/block_policy');
@@ -146,6 +152,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/rules', rulesRoutes);
 app.use('/api/allowlist', allowlistRoutes);
 app.use('/api/audit', auditRoutes);
+app.use('/api/health', healthRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/threads', statsRoutes);
 app.use('/api/anomalies', anomaliesRoutes);
@@ -190,10 +197,11 @@ async function start() {
             }
         }, CONFIG.BLOCK_SWEEP_INTERVAL_MS);
 
-        // Periodically trim dpi:logs stream every 30s (approximate trim to 20,000 entries)
+        // Periodically trim dpi:logs stream every 30s (approximate trim to DPI_LOGS_MAXLEN entries, default: 200,000)
+        const DPI_LOGS_MAXLEN = parseInt(process.env.DPI_LOGS_MAXLEN, 10) || 200000;
         setInterval(async () => {
             try {
-                await redisClient.xTrim('dpi:logs', 'MAXLEN', 20000, { strategyModifier: '~' });
+                await redisClient.xTrim('dpi:logs', 'MAXLEN', DPI_LOGS_MAXLEN, { strategyModifier: '~' });
             } catch (err) {
                 console.error('[Redis Trim Error] Failed to trim dpi:logs:', err);
             }

@@ -6,6 +6,7 @@ import {
   AuditLogEntry,
   WorkerThreadStats,
   AnomalyAlert,
+  HealthStatusResponse,
   MlStatusResponse,
   SessionReportData,
 } from "@/types/aegis";
@@ -388,6 +389,23 @@ export const api = {
       if (err.message === "Session expired - please sign in again") throw err;
     }
     return { online: false };
+  },
+
+  async getHealth(): Promise<HealthStatusResponse> {
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/health`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (err: any) {
+      if (err.message === "Session expired - please sign in again") throw err;
+    }
+    return {
+      redis: "down",
+      ml: "offline",
+      engine: "stopped",
+      engine_stats_fresh: false,
+    };
   },
 
   async getCaptureInterfaces(): Promise<{ name: string; ip: string }[]> {

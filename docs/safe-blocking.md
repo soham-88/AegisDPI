@@ -14,6 +14,7 @@ All blocking state is coordinated centrally in Redis:
 | `blocklist:strikes` | Hash | Maps `ip` to JSON array of strike timestamps in ms `[ts1, ts2, ...]`. Pruned on every write to the 24-hour window. |
 | `allowlist:entries` | Hash | Maps IP or CIDR `entry` to JSON: `{ entry, note, added_by, added_at }`. |
 | `audit:log` | Stream | Append-only security audit log capped at ~10,000 entries via `MAXLEN ~ 10000`. |
+| `dpi:logs` | Stream | Packet inspection log stream trimmed periodically to `DPI_LOGS_MAXLEN` (default ~200,000 entries). |
 | `blocklist:updates` | Pub/Sub Channel | Published commands (`ADD IP <ip>`, `DEL IP <ip>`) consumed by engine and UI. |
 
 ## 3. Block Expiry & Repeat Offender Escalation

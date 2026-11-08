@@ -202,7 +202,8 @@ cleanup() {
   # 1. Stop attack and benign client processes inside ns_attacker
   echo "Stopping client and attack processes..."
   sudo ip netns pids ns_attacker 2>/dev/null | xargs -r sudo kill -9 2>/dev/null || true
-  kill "${CLIENT_BROWSER_PID:-}" "${CLIENT_HEAVY_PID:-}" 2>/dev/null || true
+  { kill "${CLIENT_BROWSER_PID:-}" "${CLIENT_HEAVY_PID:-}" 2>/dev/null || true; } 2>/dev/null
+  { wait "${CLIENT_BROWSER_PID:-}" "${CLIENT_HEAVY_PID:-}" 2>/dev/null || true; } 2>/dev/null
 
   # 2. Stop host services
   echo "Stopping host services..."
@@ -593,6 +594,7 @@ sudo ip netns exec ns_attacker bash -c "
   done
 " &
 CLIENT_BROWSER_PID=$!
+disown "${CLIENT_BROWSER_PID}" 2>/dev/null || true
 
 # Client 2: 10.10.0.4 "heavy user"
 sudo ip netns exec ns_attacker bash -c "
@@ -621,6 +623,7 @@ sudo ip netns exec ns_attacker bash -c "
   done
 " &
 CLIENT_HEAVY_PID=$!
+disown "${CLIENT_HEAVY_PID}" 2>/dev/null || true
 
 run_attack() {
   local label="$1"

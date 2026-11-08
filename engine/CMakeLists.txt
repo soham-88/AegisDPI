@@ -32,6 +32,7 @@ include(FetchContent)
 FetchContent_Declare(
   redis-plus-plus
   URL https://github.com/sewenew/redis-plus-plus/archive/refs/tags/1.3.12.tar.gz
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(REDIS_PLUS_PLUS_BUILD_TEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(redis-plus-plus)
@@ -50,6 +51,7 @@ include(FetchContent)
 FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)

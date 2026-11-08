@@ -246,9 +246,11 @@ router.get('/', async (req, res) => {
 
             let top_feature = '-';
             if (Array.isArray(payload.features) && payload.features.length > 0) {
-                const sorted = [...payload.features].sort((a, b) =>
-                    (b.deviation || b.contribution || 0) - (a.deviation || a.contribution || 0)
-                );
+                const sorted = [...payload.features].sort((a, b) => {
+                    const aVal = typeof a.contribution_pct === 'number' ? a.contribution_pct : (a.deviation || a.contribution || 0);
+                    const bVal = typeof b.contribution_pct === 'number' ? b.contribution_pct : (b.deviation || b.contribution || 0);
+                    return bVal - aVal;
+                });
                 top_feature = sorted[0].name || '-';
             }
 
@@ -287,12 +289,20 @@ router.get('/', async (req, res) => {
 
         // ML info
         const ml = {
-            model_type: mlStatus.model_type || (mlStatus.online ? 'IsolationForest' : 'N/A'),
-            feature_count: Array.isArray(mlStatus.feature_schema) ? mlStatus.feature_schema.length : (mlStatus.online ? 5 : 0),
+            model_version: mlStatus.model_version || (mlStatus.online ? 'v3' : 'N/A'),
+            model_type: mlStatus.model_type || (mlStatus.online ? 'IsolationForest + EnvelopeGuard' : 'N/A'),
+            feature_count: Array.isArray(mlStatus.feature_schema) ? mlStatus.feature_schema.length : (mlStatus.online ? 10 : 0),
             auto_mitigate: Boolean(mlStatus.auto_mitigate),
-            threshold: 0.85,
+            threshold: mlStatus.thresholds
+                ? (mlStatus.thresholds.iforest_anomalous !== undefined
+                    ? mlStatus.thresholds.iforest_anomalous
+                    : (mlStatus.thresholds.anomalous_confidence ?? 0.85))
+                : (mlStatus.online ? (mlStatus.model_version === 'v1' ? 0.85 : 0) : 0),
             online: Boolean(mlStatus.online)
         };
+        if (mlStatus.thresholds) {
+            ml.thresholds = mlStatus.thresholds;
+        }
 
         res.json({
             generated_at,

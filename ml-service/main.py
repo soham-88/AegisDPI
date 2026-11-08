@@ -486,6 +486,7 @@ class ModelStatusResponse(BaseModel):
     trained_at: str
     feature_schema: list[str]
     baselines: Dict[str, float]
+    thresholds: Optional[Dict[str, Any]] = None
     auto_mitigate: bool
     alert_cooldown_s: float
     mitigation_cooldown_s: Optional[float] = None
@@ -518,6 +519,11 @@ def get_model_status():
             k: float(v.get("median", 0.0))
             for k, v in model.base_model.feature_stats.items()
         }
+        thresholds = {
+            "iforest_anomalous": float(model.threshold_anomalous_v2),
+            "iforest_suspicious": float(model.threshold_suspicious_v2),
+            "guard_limits": {k: float(v) for k, v in model.limit_raw.items()},
+        }
     else:
         try:
             mtime = os.path.getmtime(MODEL_PATH)
@@ -536,6 +542,10 @@ def get_model_status():
         trained_at = model.meta.get("trained_at", trained_at_file)
         feature_schema = FEATURE_NAMES
         baselines = model.baselines
+        thresholds = {
+            "anomalous_confidence": 0.85,
+            "suspicious_confidence": 0.60,
+        }
 
     return ModelStatusResponse(
         model_loaded=model.is_loaded(),
@@ -547,6 +557,7 @@ def get_model_status():
         trained_at=trained_at,
         feature_schema=feature_schema,
         baselines=baselines,
+        thresholds=thresholds,
         auto_mitigate=ML_AUTO_MITIGATE,
         alert_cooldown_s=ML_ALERT_COOLDOWN_S,
         mitigation_cooldown_s=ML_MITIGATION_COOLDOWN_S,

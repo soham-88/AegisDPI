@@ -646,6 +646,9 @@ export const SessionReportView: React.FC<SessionReportViewProps> = ({ onClose })
                       <span className="text-slate-500 block text-[11px]">MODEL TYPE</span>
                       <strong className="text-slate-900 text-sm font-semibold whitespace-normal break-words">
                         {data.ml.model_type}
+                        {data.ml.model_version && data.ml.model_version !== "N/A"
+                          ? ` (${data.ml.model_version})`
+                          : ""}
                       </strong>
                     </div>
                     <div className="p-2.5 bg-slate-50 border border-slate-200 rounded">
@@ -664,7 +667,11 @@ export const SessionReportView: React.FC<SessionReportViewProps> = ({ onClose })
                     </div>
                     <div className="p-2.5 bg-slate-50 border border-slate-200 rounded">
                       <span className="text-slate-500 block text-[11px]">ANOMALY THRESHOLD</span>
-                      <strong className="text-slate-900 text-sm font-semibold">&ge; {data.ml.threshold}</strong>
+                      <strong className="text-slate-900 text-sm font-semibold">
+                        {data.ml.thresholds?.guard_limits
+                          ? `IF score \u2265 ${typeof data.ml.threshold === "number" ? data.ml.threshold.toFixed(4) : data.ml.threshold} or Guard limit`
+                          : `\u2265 ${typeof data.ml.threshold === "number" ? data.ml.threshold.toFixed(4) : data.ml.threshold}`}
+                      </strong>
                     </div>
                   </div>
                 </div>

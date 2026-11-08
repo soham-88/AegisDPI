@@ -146,7 +146,7 @@ export const AnomalyAlertPanel: React.FC = () => {
                 ML Anomaly Verdicts ({anomalies.length})
               </h3>
               <p className="text-xs text-[#8b9ac6] mt-0.5">
-                Isolation Forest · 5 features · 5-s window per source IP
+                {mlStatus.model_type || "IsolationForest + EnvelopeGuard"} · {mlStatus.feature_schema?.length ?? 10} features · 5-s window per source IP{mlStatus.model_version ? ` · model ${mlStatus.model_version}` : ""}
               </p>
             </div>
             <Cpu className="h-4 w-4 text-[#8b9ac6]" />
@@ -255,7 +255,9 @@ export const AnomalyAlertPanel: React.FC = () => {
                 </div>
               )}
               <p className="text-xs text-[#8b9ac6] mt-1 font-sans">
-                Share of each feature's relative deviation from its baseline: |observed - baseline| / baseline, normalised to 100%.
+                {displayAnomaly?.model_version === "v1"
+                  ? "Share of each feature's relative deviation from its baseline: |observed - baseline| / baseline, normalised to 100%."
+                  : "Share of each feature's robust deviation from the normal median: |observed - median| / IQR, normalised to 100%."}
               </p>
             </div>
             <div className="flex items-center space-x-1 text-xs font-mono text-[#2fb8a6] whitespace-nowrap shrink-0">
@@ -266,6 +268,75 @@ export const AnomalyAlertPanel: React.FC = () => {
 
           {displayAnomaly ? (
             <div className="space-y-6">
+              {/* Envelope Guard Checks Table (when guard entries present) */}
+              {displayAnomaly.guard && displayAnomaly.guard.length > 0 && (
+                <div className="bg-[#0c142e] border border-[#22305e] rounded-lg p-3.5 font-mono text-xs">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-[#eef1f8]">
+                      Envelope Guard Checks
+                    </span>
+                    <span className="text-[10px] text-[#8b9ac6]">
+                      Limit = max(3× normal max, normal max + 10)
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="border-b border-[#22305e] text-[#8b9ac6] text-[11px]">
+                          <th className="pb-2 font-medium">Feature</th>
+                          <th className="pb-2 font-medium text-right">Observed</th>
+                          <th className="pb-2 font-medium text-right">Normal Max</th>
+                          <th className="pb-2 font-medium text-right">Limit</th>
+                          <th className="pb-2 font-medium text-right">Ratio</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#16204a]">
+                        {displayAnomaly.guard.map((g) => {
+                          const exceeded = g.ratio > 1.0;
+                          return (
+                            <tr
+                              key={g.feature}
+                              className={
+                                exceeded
+                                  ? "bg-rose-500/15 text-rose-200 font-semibold"
+                                  : "text-[#a9b6da]"
+                              }
+                            >
+                              <td className="py-1.5 pr-2">
+                                <span>{g.human_name || g.feature}</span>
+                                <span className="text-[10px] text-[#8b9ac6] ml-1.5 font-mono">
+                                  ({g.feature})
+                                </span>
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                {Number(g.raw_value).toFixed(1)}
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                {Number(g.normal_max).toFixed(1)}
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                {Number(g.limit).toFixed(1)}
+                              </td>
+                              <td className="py-1.5 pl-2 text-right">
+                                <span
+                                  className={
+                                    exceeded
+                                      ? "text-rose-400 font-bold"
+                                      : "text-[#8b9ac6]"
+                                  }
+                                >
+                                  {Number(g.ratio).toFixed(2)}x
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               {/* Feature Bars */}
               <div className="space-y-4">
                 {displayAnomaly.features.map((feat) => {
@@ -342,15 +413,28 @@ export const AnomalyAlertPanel: React.FC = () => {
                   <p className="font-semibold text-[#eef1f8]">
                     How This Detection Works:
                   </p>
-                  <p>
-                    The ML service reads every packet record from dpi:logs, builds
-                    5 features per source IP over a 5-second window, and scores them
-                    with an Isolation Forest once per second. At 0.85 confidence or
-                    above the verdict is ANOMALOUS: the service calls POST /api/rules
-                    to block the source, publishes the verdict to this page, and
-                    sends a Telegram alert (at most one per IP every 10 minutes).
-                    Blocking happens after detection, not inline.
-                  </p>
+                  {mlStatus.model_version === "v1" ? (
+                    <p>
+                      The ML service reads every packet record from dpi:logs, builds
+                      5 features per source IP over a 5-second window, and scores them
+                      with an Isolation Forest once per second. At 0.85 confidence or
+                      above the verdict is ANOMALOUS: the service calls POST /api/rules
+                      to block the source, publishes the verdict to this page, and
+                      sends a Telegram alert (at most one per IP every 10 minutes).
+                      Blocking happens after detection, not inline.
+                    </p>
+                  ) : (
+                    <p>
+                      The ML service reads packet records from dpi:logs and builds 10
+                      traffic-shape features per source IP over a 5-s window, scored
+                      every second by an IsolationForest trained only on normal traffic,
+                      plus a per-feature envelope guard (limit = max(3x normal max, normal max + 10)).
+                      A verdict is ANOMALOUS if traffic is more unusual than every normal
+                      validation window or if any guard limit is exceeded. Blocks expire
+                      (10 min → 1 h → 24 h for repeat offenders), and allowlisted IPs are
+                      never blocked. Blocking happens after detection, not inline.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

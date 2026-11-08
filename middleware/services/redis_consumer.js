@@ -1,11 +1,21 @@
 const { createClient, commandOptions } = require('redis');
 
 async function startRedisConsumer(io, redisUrl) {
-    const redisClient = createClient({ url: redisUrl });
+    const redisClient = createClient({
+        url: redisUrl,
+        socket: {
+            reconnectStrategy: (retries) => Math.min(retries * 50, 2000)
+        }
+    });
     redisClient.on('error', err => console.error('[Redis Consumer Client Error]', err));
     await redisClient.connect();
 
-    const subClient = createClient({ url: redisUrl });
+    const subClient = createClient({
+        url: redisUrl,
+        socket: {
+            reconnectStrategy: (retries) => Math.min(retries * 50, 2000)
+        }
+    });
     subClient.on('error', err => console.error('[Redis Sub Client Error]', err));
     await subClient.connect();
 

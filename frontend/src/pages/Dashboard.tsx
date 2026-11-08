@@ -4,6 +4,7 @@ import { AlertOctagon, Zap, X } from "lucide-react";
 import { useAegisStore } from "@/hooks/useAegisStore";
 import { Sidebar } from "@/components/Sidebar";
 import { Header } from "@/components/Header";
+import { HealthBanner } from "@/components/HealthBanner";
 import { StatsOverview } from "@/components/StatsOverview";
 import { PacketLogTable } from "@/components/PacketLogTable";
 import { BlocklistManager } from "@/components/BlocklistManager";
@@ -78,6 +79,7 @@ export const Dashboard: React.FC = () => {
       {/* Main Content Area */}
       <div className={`flex-1 flex flex-col min-w-0 ${isReportOpen ? "print:hidden" : ""}`}>
         <Header />
+        <HealthBanner />
 
         {/* Global Anomaly Flash Banner */}
         <AnimatePresence>

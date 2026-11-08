@@ -30,6 +30,24 @@ let currentRates = {
 };
 
 function normalizeAnomaly(item: any): AnomalyAlert {
+  let rawFeatures = item.features;
+  if (typeof rawFeatures === "string") {
+    try {
+      rawFeatures = JSON.parse(rawFeatures);
+    } catch {
+      rawFeatures = [];
+    }
+  }
+
+  let rawGuard = item.guard;
+  if (typeof rawGuard === "string") {
+    try {
+      rawGuard = JSON.parse(rawGuard);
+    } catch {
+      rawGuard = undefined;
+    }
+  }
+
   return {
     id: String(item.id || `anom_${Date.now()}`),
     timestamp: String(item.timestamp || new Date().toISOString()),
@@ -39,8 +57,8 @@ function normalizeAnomaly(item: any): AnomalyAlert {
     verdict: item.verdict === "SUSPICIOUS" ? "SUSPICIOUS" : "ANOMALOUS",
     auto_mitigated: Boolean(item.auto_mitigated),
     description: String(item.description || ""),
-    features: Array.isArray(item.features)
-      ? item.features.map((f: any) => ({
+    features: Array.isArray(rawFeatures)
+      ? rawFeatures.map((f: any) => ({
           name: String(f.name || ""),
           value: Number(f.value) || 0,
           baseline: Number(f.baseline) || 0,
@@ -51,7 +69,16 @@ function normalizeAnomaly(item: any): AnomalyAlert {
     telegram_alert: item.telegram_alert,
     model_version: item.model_version ? String(item.model_version) : undefined,
     trigger: item.trigger ? String(item.trigger) : undefined,
-    guard: Array.isArray(item.guard) ? item.guard : undefined,
+    guard: Array.isArray(rawGuard)
+      ? rawGuard.map((g: any) => ({
+          feature: String(g.feature || ""),
+          human_name: String(g.human_name || g.feature || ""),
+          raw_value: Number(g.raw_value) || 0,
+          normal_max: Number(g.normal_max) || 0,
+          limit: Number(g.limit) || 0,
+          ratio: Number(g.ratio) || 0,
+        }))
+      : undefined,
   };
 }
 

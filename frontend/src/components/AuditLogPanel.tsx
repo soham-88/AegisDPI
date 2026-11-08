@@ -161,14 +161,18 @@ export const AuditLogPanel: React.FC = () => {
                     {log.detail || log.reason || "-"}
                   </td>
                   <td className="p-2.5 whitespace-nowrap text-[11px]">
-                    {log.expires_at ? (
-                      <span title={`Expires: ${log.expires_at}`}>
-                        {log.ttl_s ? `${log.ttl_s}s` : formatDateTime(log.expires_at)}
-                      </span>
-                    ) : log.ttl_s ? (
-                      `${log.ttl_s}s`
+                    {log.action === "block" || log.action === "extend" ? (
+                      log.expires_at ? (
+                        <span title={`Expires: ${log.expires_at}`}>
+                          {log.ttl_s ? `${log.ttl_s}s` : formatDateTime(log.expires_at)}
+                        </span>
+                      ) : log.ttl_s ? (
+                        `${log.ttl_s}s`
+                      ) : (
+                        "permanent"
+                      )
                     ) : (
-                      "permanent"
+                      "—"
                     )}
                   </td>
                   <td className="p-2.5 whitespace-nowrap">
