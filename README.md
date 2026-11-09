@@ -6,7 +6,6 @@ A multi-threaded C++ deep packet inspection engine with kernel-level blocking (n
 
 [![CI](https://github.com/soham-88/AegisDPI/actions/workflows/ci.yml/badge.svg)](https://github.com/soham-88/AegisDPI/actions/workflows/ci.yml)
 
-![Demo](docs/images/demo.gif)
 
 | Real-time SOC Dashboard & Telemetry | ML Anomaly Verdict & Envelope Guard Breakdown |
 | :---: | :---: |
