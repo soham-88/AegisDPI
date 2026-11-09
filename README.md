@@ -11,9 +11,12 @@ A multi-threaded C++ deep packet inspection engine with kernel-level blocking (n
 | :---: | :---: |
 | ![Dashboard Telemetry](docs/images/dashboard-stats.png)<br><sub>Live packet inspection rate, system throughput, and protocol distribution.</sub> | ![ML Guard Alert](docs/images/ml-guard-alert.png)<br><sub>IsolationForest anomaly index and per-feature envelope guard ratio table.</sub> |
 | **Kernel Blocklist & Append-Only Audit Trail** | **External Incident Alert Dispatch (Telegram)** |
-| ![Blocklist Audit](docs/images/blocklist-audit.png)<br><sub>Active nftables block rules, automated TTL expiry, and audit log.</sub> | ![Telegram Alert](docs/images/telegram-alert.png)<br><sub>Real-time out-of-band alert notification with attack attribution.</sub> |
+| ![Blocklist Audit](docs/images/blocklist.png)<br><sub>Active nftables block rules, automated TTL expiry, and audit log.</sub> | ![Telegram Alert](docs/images/telegram-alert.png)<br><sub>Real-time out-of-band alert notification with attack attribution.</sub> |
 
 ---
+
+
+![Audit trail](docs/images/audit.png)
 
 ## Highlights
 
@@ -288,6 +291,8 @@ engine/build/dpi_tests
 - **IPv4 Exclusive**: Packet parsing, flow hashing, ML schemas, and `libnftables` rule generation support IPv4 only; IPv6 headers and neighbor discovery are unhandled.
 
 ---
+
+- **Live false block of a heavy downloader**: in a live demo with back-to-back 20 MB downloads about every 2 s (much denser than the downloads in the training data), the IsolationForest flagged the benign client 10.10.0.4 twice (packets per flow far above the normal median). Block expiry limited the impact (10 min, then 1 h); allowlisting known heavy clients prevents it.
 
 ## Future Work
 
