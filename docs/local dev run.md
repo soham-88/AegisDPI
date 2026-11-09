@@ -1,92 +1,158 @@
-# AegisDPI — Local (Non-Docker) Run Guide
+# AegisDPI — Local Run Guide
 
-Use this doc, not `08_DEPLOYMENT_DOCKER.md`, for your upcoming presentation. Docker Compose is for later, once the panel has seen the working system and you're packaging it for a cleaner/portable deployment. Running everything directly via `npm run dev` / `uvicorn` / the compiled engine binary is actually **better for a live presentation** — no container startup delay, and if something needs a quick fix mid-demo you can edit and restart in seconds instead of rebuilding an image.
+This guide describes how to run and demonstrate the complete AegisDPI stack locally on Linux (Ubuntu 22.04+, Ubuntu 24.04, or WSL2) using the provided lifecycle scripts and capability-hardened engine.
 
-## 1. What runs where (all on `localhost`, different ports)
+---
 
-| Service            | How it runs                                 | Default port                                              |
-| ------------------ | ------------------------------------------- | --------------------------------------------------------- |
-| Redis              | `redis-server` (installed directly in WSL2) | 6379                                                      |
-| C++ Engine         | compiled binary, run directly               | n/a (talks to Redis + NIC/netns, no HTTP port of its own) |
-| Node middleware    | `npm run dev`                               | 4000                                                      |
-| FastAPI ML service | `uvicorn main:app --reload`                 | 8000                                                      |
-| React frontend     | `npm run dev` (Vite)                        | 5173                                                      |
+## 1. Services & Architecture Overview
 
-## 2. One-time local setup
+All services run locally on loopback addresses with dedicated roles and security boundaries:
 
-```bash
-# Redis
-sudo apt install redis-server
-sudo systemctl status redis-server   # or run manually: redis-server --requirepass <your_redis_password>
+| Service | Execution Mechanism | Default Endpoint / Port | Description |
+|---|---|---|---|
+| **Redis** | `redis-server` (managed by `aegis.sh`) | `127.0.0.1:6379` | In-memory message bus (`dpi:logs`, `dpi:stats`, `blocklist:*`, `audit:log`). Requires password. |
+| **C++ Engine** | `/usr/local/sbin/aegis-dpi-engine` | `veth_lab` / Replay | Multi-threaded capture, classification, and in-process `libnftables` enforcement. |
+| **Node.js Middleware** | Node 22 (`server.js`) | `http://127.0.0.1:4000` | REST API, Socket.io real-time streaming, RBAC auth, static frontend host. |
+| **ML Anomaly Service** | FastAPI / Python 3.14 (`uvicorn`) | `http://127.0.0.1:8000` | Real-time sliding window anomaly detection (IsolationForest + EnvelopeGuard). |
+| **Frontend Console** | Vite production bundle or dev server | `http://127.0.0.1:4000` / `:5173` | Dark-mode SOC dashboard with real-time charts, log inspection, and rule management. |
 
-# Node middleware
-cd middleware && npm install
+---
 
-# FastAPI ML service
-cd ml-service && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+## 2. One-Time Setup
 
-# React frontend
-cd frontend && npm install
-```
+### Step A: Prerequisites & Automated Setup
 
-Create a **local-only** `.env` in each service (never commit these):
-
-```
-# middleware/.env
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-REDIS_PASSWORD=<your_redis_password>
-JWT_SECRET=<your_jwt_secret>
-FRONTEND_ORIGIN=http://localhost:5173
-
-# ml-service/.env
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-REDIS_PASSWORD=<your_redis_password>
-
-# frontend/.env
-VITE_API_URL=http://localhost:4000
-```
-
-## 3. Startup sequence for a presentation (one terminal tab per service)
-
-Start in this order — each one depends on the previous being up:
+Run the automated setup script to install dependencies, compile the engine, set up Python and Node.js environments, and generate secure environment files:
 
 ```bash
-# Terminal 1
-redis-server --requirepass <your_redis_password>
+git clone https://github.com/soham-88/AegisDPI.git
+cd AegisDPI
 
-# Terminal 2 (once Redis is confirmed up: redis-cli -a <your_redis_password> ping -> PONG)
-cd middleware && npm run dev
-
-# Terminal 3
-cd ml-service && source venv/bin/activate && uvicorn main:app --reload --port 8000
-
-# Terminal 4
-cd frontend && npm run dev
-# open http://localhost:5173
-
-# Terminal 5 (start last — this is the traffic source)
-cd engine/build
-sudo ./dpi_engine --live --iface <your interface, or your netns veth>
-# or, if live capture / your lab netns isn't set up for this particular
-# presentation yet: ./dpi_engine --replay ../test_dpi.pcap ../output.pcap
+# Run automated setup
+./scripts/setup.sh
 ```
 
-If your live-capture/enforcement path (Phase 2+ in `07_TESTING_QA_PLAN.md`) isn't finished yet by presentation day, **replay mode is a completely legitimate thing to show** — say plainly "this is running against a recorded capture for a repeatable demo; live-interface capture is implemented and validated separately, shown here [or: coming in the next milestone]." Don't fake live capture with replay without saying so — a professor asking "is this actually live?" and getting caught overstating it is far worse than being upfront about what's finished.
+`setup.sh` performs the following idempotently:
+1. Installs system packages via `apt` (`g++`, `cmake`, `libpcap-dev`, `libhiredis-dev`, `libnftables-dev`, `redis-server`, `python3-venv`, `nodejs`, `npm`, `ethtool`, etc.).
+2. Verifies Node.js version ($\ge 18$, Node 22 recommended).
+3. Stops and masks any default system-wide `redis-server` service so `aegis.sh` manages isolated Redis instances.
+4. Compiles the C++ engine in `Release` mode (`engine/build`) and runs unit tests via `ctest`.
+5. Installs middleware and frontend npm dependencies (`npm ci`) and builds the frontend production bundle.
+6. Sets up the Python virtual environment in `ml-service/venv` and installs `requirements.txt`.
+7. Prompts for admin credentials and generates cryptographically secure, randomized secrets (`JWT_SECRET`, Redis password, service account passwords) in `middleware/.env` and `ml-service/.env`.
 
-## 4. CORS reminder (a very common local-run gotcha)
+### Step B: Install the Hardened Engine Binary (Capabilities)
 
-Since frontend (`:5173`) and middleware (`:4000`) are different origins locally, make sure Express has CORS enabled for `http://localhost:5173` specifically (not `*`, since you're also sending a JWT) — and that Socket.io's CORS config matches. This is one of the most common "works when I `curl` it, breaks in the browser" issues — check the browser console's network tab first if the dashboard shows no live data.
+AegisDPI does **not** run the engine under root or `sudo`. Instead, install the binary to `/usr/local/sbin` with minimal Linux file capabilities (`CAP_NET_RAW` and `CAP_NET_ADMIN`):
 
-## 5. What "done" looks like for the localhost presentation
+```bash
+# Builds, verifies no RPATH/RUNPATH, installs root-owned binary, sets capabilities,
+# and removes any legacy sudoers entries:
+./scripts/install_engine.sh --remove-sudoers
+```
 
-Same end-to-end loop as the full viva demo in `09_VIVA_PREP.md`, just without Docker in the picture:
+This ensures:
+- The binary is root-owned (`root:root`, mode `0755`) at `/usr/local/sbin/aegis-dpi-engine` to prevent tampering.
+- Only raw packet capture (`CAP_NET_RAW`) and firewall table modification (`CAP_NET_ADMIN`) are granted.
+- In-process `libnftables` operates without invoking `/bin/sh` or child shells.
+- Zero sudo rules are required in `/etc/sudoers.d/`.
 
-1. Dashboard at `http://localhost:5173` shows live/replayed traffic.
-2. Adding a rule in the UI updates Redis (`redis-cli -a <your_redis_password> SMEMBERS blocklist:ips`) and the engine enforces it.
-3. (If ready) the ML → auto-block → Telegram chain fires from a synthetic flood.
+---
 
-## 6. Moving to Docker afterward
+## 3. Starting the Stack
 
-Once the localhost version is fully working and demoed, follow `08_DEPLOYMENT_DOCKER.md` — the only real changes are: services read Redis host as `redis` (the Compose service name) instead of `127.0.0.1`, and the engine still runs outside the main Compose file (host networking / privileged), exactly as documented there. Nothing about your application logic needs to change between local and Dockerized — only the `.env` values pointing at hostnames.
+Use `scripts/aegis.sh` to manage the background services:
+
+```bash
+# 1. Start virtual network lab (creates ns_attacker and veth_lab with disabled offloads)
+sudo ./scripts/lab.sh up
+
+# 2. Start core services (Redis, ML Service, and Middleware)
+./scripts/aegis.sh start
+```
+
+`aegis.sh start` automatically:
+- Reads the generated Redis password from `middleware/.env`.
+- Spawns Redis on `127.0.0.1:6379` with `requirepass`.
+- Starts the ML service daemon on `http://127.0.0.1:8000`.
+- Starts the Node middleware on `http://127.0.0.1:4000`.
+- Waits for all three ports to respond healthy.
+
+Open your browser at **`http://127.0.0.1:4000`** and log in using the admin credentials chosen during setup.
+
+---
+
+## 4. Starting Traffic Inspection
+
+### Live Network Capture (Interactive Demo)
+
+1. On the dashboard header, click **Start Capture** and select interface `veth_lab`.
+2. Alternatively, launch the engine directly from the command line as an unprivileged user:
+   ```bash
+   PASS=$(grep -E '^REDIS_URL=' middleware/.env | sed -E 's/.*redis:\/\/:([^@]+)@.*/\1/')
+   /usr/local/sbin/aegis-dpi-engine --live veth_lab --lbs 2 --fps 4 --redis-host 127.0.0.1 --redis-password "${PASS}"
+   ```
+3. Generate traffic or attack floods from the attacker network namespace (`ns_attacker`):
+   ```bash
+   # Normal ping check (0% drop)
+   sudo ip netns exec ns_attacker ping -c 3 10.10.0.1
+
+   # ICMP flood attack (triggers ML envelope guard / auto-mitigation)
+   sudo ip netns exec ns_attacker hping3 --icmp -i u1000 -I veth_attacker -a 10.10.0.2 10.10.0.1
+
+   # TCP SYN flood attack
+   sudo ip netns exec ns_attacker hping3 -S -p 80 --flood 10.10.0.1
+
+   # Or run built-in lab attack test
+   ./scripts/lab.sh attack 3000
+   ```
+4. Observe the dashboard:
+   - Packet logs stream into the console in real time.
+   - The ML service evaluates traffic in 5-second windows; detected attacks produce `ANOMALOUS` alerts.
+   - The auto-mitigation pipeline blocks the attacker's source IP via `libnftables`.
+   - Further traffic from the attacker drops immediately at the kernel level (100% loss).
+
+### Offline Replay Mode (Deterministic Benchmark)
+
+To demonstrate the engine without live virtual interfaces:
+```bash
+engine/build/dpi_engine --replay engine/test_dpi.pcap --lbs 2 --fps 2 --redis-host 127.0.0.254
+```
+This reads the bundled 77-packet capture and prints detailed throughput, thread dispatch, and classification statistics.
+
+---
+
+## 5. Verification & Service Management
+
+Check service status at any time:
+```bash
+./scripts/aegis.sh status
+```
+
+Inspect live background logs:
+```bash
+./scripts/aegis.sh logs middleware
+./scripts/aegis.sh logs ml
+```
+
+Run end-to-end smoke tests against running services:
+```bash
+# Verify ML service status and scoring vectors
+./scripts/ml_smoke.sh
+
+# Verify role enforcement, block expiry, and audit trail
+./scripts/phase4_smoke.sh
+```
+
+---
+
+## 6. Teardown
+
+To stop all services and remove virtual network interfaces:
+```bash
+# Stop Redis, Middleware, and ML service
+./scripts/aegis.sh stop
+
+# Tear down lab namespaces and veth interfaces
+sudo ./scripts/lab.sh down
+```
